@@ -4,6 +4,8 @@ from typing import List, Dict, Any, AsyncGenerator, Optional
 from datetime import datetime
 import asyncio
 import uuid
+import json
+import re
 
 from llama_index.core.agent import ReActAgent
 from llama_index.core.agent.workflow import ToolCallResult, AgentStream
@@ -192,17 +194,13 @@ class StepByStepAgent:
 
         try:
             with TraceContext(
-                "critic_step", critic_id=critic_id, step=step_description
+                "critic_step", critic_id=critic_id, step=step_description[:50]
             ):
                 handler = self.agent.run(critic_prompt, ctx=ctx)
                 response = await handler
                 response_text = str(response)
 
             # Parse JSON response
-            import json
-            import re
-
-            # Extract JSON from response
             json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
             if json_match:
                 validation = json.loads(json_match.group())
@@ -211,7 +209,7 @@ class StepByStepAgent:
                 validation = self._fallback_critic(step_result)
 
             logger.debug(
-                f"Critic validation for '{step_description}...': {validation.get('success', False)}"
+                f"Critic validation for '{step_description[:50]}...': {validation.get('success', False)}"
             )
             return validation
 
@@ -294,7 +292,7 @@ class StepByStepAgent:
         Request: {query}
         
         Plan requirements:
-        1. Each step should be a specific action
+        1. Each step should be a specific action (e.g., "Search for X using duckduckgo_search", "Navigate to Y", "Extract text from page")
         2. Steps should be in logical sequence
         3. Each step must use available tools
         4. Steps should be granular enough for control
@@ -311,14 +309,14 @@ class StepByStepAgent:
         - take_screenshot: take screenshot of current page
         - save_as_pdf: save current page as PDF
         
-        Format: simple list of steps, one per line, no numbering.
+        Format: simple list of steps, one per line, no numbering, no additional text.
         Example:
         Search for recent AI news using duckduckgo_search
         Navigate to the first result URL
         Extract text from the page
         Extract hyperlinks from the page
         
-        Return only the list of steps, nothing else.
+        Return only the list of steps, nothing else. Do not include "Thought:" or "Answer:" or any other prefixes.
         """
 
         try:
@@ -331,21 +329,48 @@ class StepByStepAgent:
             steps = []
             for line in response_text.split("\n"):
                 line = line.strip()
+
+                # Skip empty lines and markdown code blocks
+                if not line or line.startswith(("```", "`", "#")):
+                    continue
+
+                # Remove common prefixes
+                line = re.sub(r"^(Step\s*\d+[:.]\s*)", "", line, flags=re.IGNORECASE)
+                line = re.sub(r"^(\d+[.)]\s*)", "", line)
+                line = re.sub(r"^[-*]\s+", "", line)
+
+                # Skip lines that are just "Thought:" or "Answer:" or contain instruction templates
                 if (
-                    line
-                    and not line.startswith(("```", "`", "#", "—", "-", "*"))
-                    and len(line) > 10
+                    line.startswith(("Thought:", "Answer:", "Action:", "Observation:"))
+                    or "[your answer here" in line.lower()
+                    or "use the appropriate tool" in line.lower()
                 ):
-                    # Remove numbering if present
-                    if line[0].isdigit() and ". " in line[:4]:
-                        line = line.split(". ", 1)[1]
-                    elif line[0].isdigit() and ") " in line[:4]:
-                        line = line.split(") ", 1)[1]
-                    elif line.startswith("- "):
-                        line = line[2:]
-                    elif line.startswith("* "):
-                        line = line[2:]
+                    continue
+
+                # Only add lines that look like actual step descriptions (more than 10 chars, not just instructions)
+                if len(line) > 15 and not any(
+                    x in line.lower()
+                    for x in [
+                        "use the appropriate tool",
+                        "be specific with tool",
+                        "return only the result",
+                        "keep the response concise",
+                        "execute now",
+                        "previous steps history",
+                        "available tools",
+                    ]
+                ):
                     steps.append(line)
+
+            # If we didn't get any valid steps, use default plan
+            if not steps:
+                logger.warning("No valid steps generated, using default plan")
+                steps = [
+                    f"Search for information about '{query}' using duckduckgo_search",
+                    "Navigate to the first relevant result",
+                    "Extract text from the page",
+                    "Summarize the extracted information",
+                ]
 
             logger.debug(f"Generated {len(steps)} steps for plan")
             return steps[:7]
@@ -353,7 +378,7 @@ class StepByStepAgent:
         except Exception as e:
             logger.error(f"Error generating execution plan: {e}")
             return [
-                "Search for information using duckduckgo_search",
+                f"Search for '{query}' using duckduckgo_search",
                 "Navigate to the first relevant result",
                 "Extract text from the page",
                 "Summarize the extracted information",
@@ -367,30 +392,21 @@ class StepByStepAgent:
         # Get previous steps context
         steps_history = self._get_steps_history()
 
+        # CRITICAL FIX: Provide clear instructions WITHOUT including the step description in a way
+        # that gets misinterpreted as the actual output
         step_context = f"""
-        Execute the following plan step: {step_description}
+        Current task: Execute this specific step: "{step_description}"
         
-        Previous steps history:
+        Previous steps:
         {steps_history}
-        
-        Available tools:
-        - local_document_search
-        - duckduckgo_search
-        - navigate_to
-        - extract_text
-        - click
-        - extract_hyperlinks
-        - scrape_text
-        - take_screenshot
-        - save_as_pdf
         
         Instructions:
         1. Use the appropriate tool for this step
-        2. Be specific with tool parameters
-        3. Return ONLY the result of this step, no additional commentary
-        4. Keep the response concise
+        2. Execute ONLY this step, do not continue to next steps
+        3. Return the RESULT of executing this step, not the instructions
+        4. Be concise
         
-        Execute now and return the result:
+        Execute the step and return the result:
         """
 
         try:
@@ -405,6 +421,9 @@ class StepByStepAgent:
 
                 response = await handler
                 response_str = str(response)
+
+                # Clean up response - remove any instruction text that might have leaked
+                response_str = self._clean_step_result(response_str)
 
             # Save tool call information
             tool_calls = []
@@ -428,6 +447,30 @@ class StepByStepAgent:
             logger.error(f"Error executing step '{step_description[:50]}...': {e}")
             raise
 
+    def _clean_step_result(self, result: str) -> str:
+        """Remove instruction text and templates from step results"""
+        # Remove common instruction patterns
+        patterns_to_remove = [
+            r"1\.\s*Use the appropriate tool.*?(?=\n|$)",
+            r"2\.\s*Be specific with tool.*?(?=\n|$)",
+            r"3\.\s*Return ONLY the result.*?(?=\n|$)",
+            r"4\.\s*Keep the response concise.*?(?=\n|$)",
+            r"\[your answer here.*?\]",
+            r"Execute now and return the result:",
+            r"Previous steps history:.*?(?=\n\n)",
+            r"Available tools:.*?(?=\n\n)",
+            r"Instructions:.*?(?=\n\n)",
+        ]
+
+        cleaned = result
+        for pattern in patterns_to_remove:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+
+        # Remove multiple newlines
+        cleaned = re.sub(r"\n\s*\n", "\n", cleaned)
+
+        return cleaned.strip()
+
     def _get_steps_history(self) -> str:
         """Get history of executed steps"""
         if not self.step_history.current_plan:
@@ -438,7 +481,9 @@ class StepByStepAgent:
             if step.status == StepStatus.COMPLETED:
                 history.append(f"✅ {step.description}")
                 if step.result:
-                    history.append(f"   Result: {step.result[:100]}...")
+                    # Truncate result for display
+                    result_preview = step.result[:100].replace("\n", " ")
+                    history.append(f"   Result: {result_preview}...")
                 if step.critic_analysis:
                     history.append(f"   Analysis: {step.critic_analysis[:100]}...")
             elif step.status == StepStatus.FAILED:
