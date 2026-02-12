@@ -8,6 +8,7 @@ import torch
 import asyncio
 from pathlib import Path
 from loguru import logger
+import json
 
 # Add project root to Python path
 project_root = Path(__file__).parent
@@ -71,22 +72,18 @@ if __name__ == "__main__":
         help="Disable automatic model download",
     )
 
-    parser.add_argument(
-        "--colab",
-        action="store_true",
-        dest="colab",
-        help="Option to run in colab environment",
-    )
-
     args, unknown = parser.parse_known_args()
 
-    logger.info(f"Args: {args}")
+    logger.info(f"Args: {json.dumps(vars(args), indent=2, default=str)}")
 
-    if args.colab:
+    try:
+        import google.colab
         import nest_asyncio
 
         nest_asyncio.apply()
-        logger.info("Next asyncio applied")
+        logger.info("Nest asyncio applied for Google Colab!")
+    except:
+        logger.info("import google.colab failed. Assumming running in host mode")
 
     if args.list_models:
         list_downloaded_models()

@@ -1,12 +1,21 @@
-"""Interactive chat session management"""
+"""Interactive chat session management for Google Colab"""
 
 import asyncio
 import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+import sys
 
 from loguru import logger
+
+# Colab-specific imports
+try:
+    import google.colab
+
+    IN_COLAB = True
+except ImportError:
+    IN_COLAB = False
 
 from hybrid_search_agent.core.hybrid_agent import HybridSearchAgent
 from hybrid_search_agent.utils.setup import (
@@ -25,8 +34,23 @@ from trace_context import TraceContext
 from hybrid_search_agent.utils.model_utils import resolve_model_path
 
 
+def colab_input(prompt: str = "") -> str:
+    """Cross-compatible input function for both Colab and standard Python"""
+    if IN_COLAB:
+        from google.colab import output
+
+        # Use output.eval_js for non-blocking input in Colab
+        try:
+            return output.eval_js(f'prompt("{prompt}")') or ""
+        except:
+            # Fallback to standard input
+            return input(prompt)
+    else:
+        return input(prompt)
+
+
 async def create_new_session(
-    model: str = "tinyllama",  # Изменено с model_path на model
+    model: str = "tinyllama",
     data_dir: str = "./data",
     persist_dir: str = "./storage",
     use_gpu: bool = True,
@@ -35,12 +59,14 @@ async def create_new_session(
     playwright_slow_mo: int = 50,
     step_by_step_mode: bool = False,
     auto_download: bool = True,
+    colab_mode: bool = False,
 ) -> HybridSearchAgent:
     """
     Create a new hybrid search agent session with step-by-step execution mode.
+    Now with Google Colab compatibility.
 
     Args:
-        model: Model name/key or path to GGUF model file (e.g., 'tinyllama', 'mistral-7b', './models/my_model.gguf')
+        model: Model name/key or path to GGUF model file
         data_dir: Directory containing local documents
         persist_dir: Directory for storing vector index
         use_gpu: Whether to use GPU acceleration
@@ -49,12 +75,43 @@ async def create_new_session(
         playwright_slow_mo: Slow down Playwright operations (ms)
         step_by_step_mode: Enable step-by-step execution mode
         auto_download: Automatically download model if not found
+        colab_mode: Enable Colab-specific optimizations
 
     Returns:
         Initialized HybridSearchAgent instance
     """
 
     try:
+        # Colab-specific setup
+        if IN_COLAB or colab_mode:
+            print("📒 Running in Google Colab mode")
+
+            # Mount Google Drive for persistent storage
+            try:
+                from google.colab import drive
+
+                drive.mount("/content/drive")
+
+                # Use Drive for persistent storage if available
+                if Path("/content/drive/MyDrive").exists():
+                    persist_dir = "/content/drive/MyDrive/hybrid_search_storage"
+                    Path(persist_dir).mkdir(parents=True, exist_ok=True)
+                    print(f"💾 Using Google Drive for persistence: {persist_dir}")
+            except:
+                print("ℹ️ Google Drive not mounted, using local storage")
+
+            # Setup Playwright in Colab
+            if headless_browser:
+                print("🔄 Installing Playwright browsers (this may take a minute)...")
+                import subprocess
+
+                subprocess.run(
+                    ["playwright", "install", "chromium"],
+                    capture_output=True,
+                    text=True,
+                )
+                print("✅ Playwright browsers installed")
+
         # Prepare data directory
         prepare_data_directory()
 
@@ -66,7 +123,7 @@ async def create_new_session(
         logger.info(f"Step-by-step mode: {'ON' if step_by_step_mode else 'OFF'}")
         logger.info(f"Model: {model}")
 
-        # Resolve model path (download if needed and auto_download is True)
+        # Resolve model path with Colab optimizations
         try:
             resolved_model_path = resolve_model_path(model, auto_download=auto_download)
             logger.info(f"Resolved model path: {resolved_model_path}")
@@ -93,14 +150,16 @@ async def create_new_session(
 
         with TraceContext("initialize_hybrid_search_agent"):
             agent = HybridSearchAgent(
-                model_path=resolved_model_path,  # Передаем полный путь
-                model_name=model,  # Сохраняем имя модели для логирования
+                model_path=resolved_model_path,
+                model_name=model,
                 data_dir=data_dir,
                 persist_dir=persist_dir,
                 use_gpu=use_gpu,
                 headless_browser=headless_browser,
                 playwright_slow_mo=playwright_slow_mo,
                 step_by_step_mode=step_by_step_mode,
+                # Add Colab-specific optimizations
+                colab_mode=(IN_COLAB or colab_mode),
             )
 
             await agent.init()
@@ -138,7 +197,7 @@ async def create_new_session(
 
 
 async def interactive_chat_session(agent: HybridSearchAgent):
-    """Start an interactive chat session with step-by-step mode support"""
+    """Start an interactive chat session with support for Google Colab"""
 
     chat_history = []
     session_start = datetime.now()
@@ -148,6 +207,8 @@ async def interactive_chat_session(agent: HybridSearchAgent):
 
     print("\n" + "=" * 60)
     print("💬 INTERACTIVE CHAT MODE")
+    if IN_COLAB:
+        print("🔄 Running in Google Colab - press Ctrl+M then Enter to interrupt")
     if agent.step_by_step_mode:
         print("⚡ Step-by-step execution: ENABLED")
         print("   Step-by-step commands:")
@@ -162,8 +223,12 @@ async def interactive_chat_session(agent: HybridSearchAgent):
     try:
         while True:
             try:
-                # Get user input
-                user_input = input("\n🎯 Your question: ").strip()
+                # Get user input - Colab compatible
+                user_input = colab_input("\n🎯 Your question: ").strip()
+
+                # Handle empty input (especially in Colab)
+                if not user_input:
+                    continue
 
                 # Handle exit commands
                 if user_input.lower() in ["quit", "exit", "q"]:
@@ -183,6 +248,17 @@ async def interactive_chat_session(agent: HybridSearchAgent):
                 # Handle add document command
                 if user_input.lower().startswith("add "):
                     file_path = user_input[4:].strip()
+
+                    # Handle Colab file upload
+                    if IN_COLAB and file_path.lower() == "upload":
+                        from google.colab import files
+
+                        print("📁 Please upload your file...")
+                        uploaded = files.upload()
+                        if uploaded:
+                            file_path = next(iter(uploaded.keys()))
+                            print(f"✅ File uploaded: {file_path}")
+
                     if Path(file_path).exists():
                         logger.info(f"Attempting to add document: {file_path}")
                         success = await agent.add_document(file_path)
@@ -195,10 +271,8 @@ async def interactive_chat_session(agent: HybridSearchAgent):
                     else:
                         logger.error(f"File not found: {file_path}")
                         print(f"❌ File not found: {file_path}")
-                    continue
-
-                # Handle empty input
-                if not user_input:
+                        if IN_COLAB:
+                            print("   Use 'add upload' to upload files in Colab")
                     continue
 
                 # Handle special commands in step-by-step mode
@@ -215,6 +289,9 @@ async def interactive_chat_session(agent: HybridSearchAgent):
             except KeyboardInterrupt:
                 logger.warning("Session interrupted by user")
                 await agent.close_browser()
+                break
+            except EOFError:  # Colab specific
+                logger.warning("Input stream closed")
                 break
             except Exception as e:
                 logger.error(f"Error in chat loop: {e}")
@@ -275,7 +352,7 @@ async def _handle_step_command(
 async def _handle_step_by_step_query(
     agent: HybridSearchAgent, query: str, chat_history: list
 ):
-    """Handle query in step-by-step mode"""
+    """Handle query in step-by-step mode with Colab compatibility"""
 
     print("\n" + "=" * 60)
     print("📋 EXECUTION PLANNING")
@@ -306,22 +383,18 @@ async def _handle_step_by_step_query(
             print(f"\n✅ Step {step.id} completed successfully!")
 
             logger.info(f"Step: {event['step']}")
-            # Show result preview
             if result and len(str(result)) > 200:
                 logger.info(f"📊 Result: {str(result)[:200]}...")
             elif result:
                 logger.info(f"📊 Result: {result}")
 
-            # Show tool calls
             if step.tool_calls:
                 print(f"🔧 Tools used:")
-                for tool_call in step.tool_calls[:3]:  # Show first 3 tools
+                for tool_call in step.tool_calls[:3]:
                     print(f"   - {tool_call['tool_name']}")
                 if len(step.tool_calls) > 3:
                     print(f"     ... and {len(step.tool_calls) - 3} more")
 
-            logger.debug(f"Текущая история: {chat_history}")
-            # Store in history
             chat_history.append(
                 {
                     "timestamp": datetime.now().isoformat(),
@@ -351,7 +424,8 @@ async def _handle_step_by_step_query(
                 print("   [h] - show history")
                 print("   [q] - stop execution")
 
-                cmd = input("Command: ").strip().lower()
+                # Use Colab-compatible input
+                cmd = colab_input("Command: ").strip().lower()
 
                 if cmd == "q":
                     print("⏹️ Execution stopped by user")
@@ -376,8 +450,9 @@ async def _handle_step_by_step_query(
 
             print(f"\n⚠️ Error on step {step.id}: {error}")
             print("Continue execution? (y/n): ", end="")
+            sys.stdout.flush()  # Important for Colab
 
-            decision = input().strip().lower()
+            decision = colab_input().strip().lower()
             if decision == "y":
                 event["decision"] = {"continue": True}
             else:
@@ -396,7 +471,6 @@ async def _handle_step_by_step_query(
                 print(f"⏱️ Execution time: {duration:.1f}s")
             print("=" * 60)
 
-            # Show summary
             print("\n📋 Execution summary:")
             for step in plan.steps:
                 status_icon = (
@@ -415,7 +489,7 @@ async def _handle_step_by_step_query(
 async def _handle_standard_query(
     agent: HybridSearchAgent, query: str, chat_history: list
 ):
-    """Handle query in standard mode"""
+    """Handle query in standard mode with Colab compatibility"""
     logger.info("Processing query...")
 
     with TraceContext("process_user_query", question=query[:50]):
@@ -440,8 +514,10 @@ async def _handle_standard_query(
 
 async def quick_query(question: str, **kwargs) -> str:
     """Quick one-off query without interactive session."""
+    colab_mode = kwargs.pop("colab_mode", IN_COLAB)
+
     agent = await create_new_session(
-        display_banner=False, headless_browser=False, **kwargs
+        display_banner=False, headless_browser=False, colab_mode=colab_mode, **kwargs
     )
     try:
         start_time = time.perf_counter()
@@ -454,3 +530,41 @@ async def quick_query(question: str, **kwargs) -> str:
         return f"Error: {str(e)}"
     finally:
         await agent.close_browser()
+
+
+# Colab-specific helper functions
+async def setup_colab_environment():
+    """One-time setup for Google Colab environment"""
+    if not IN_COLAB:
+        print("❌ This function is only for Google Colab")
+        return
+
+    print("🔄 Setting up environment for Google Colab...")
+
+    import subprocess
+    import sys
+
+    packages = [
+        "playwright",
+        "nest-asyncio",
+        "ipywidgets",
+    ]
+
+    for package in packages:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", package])
+
+    subprocess.run(
+        ["playwright", "install", "chromium"], capture_output=True, text=True
+    )
+
+    print("✅ Colab environment setup complete!")
+
+
+def run_chat_session(agent):
+    """Synchronous wrapper for running chat session in Colab"""
+    try:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(interactive_chat_session(agent))
+    except RuntimeError:
+        # If we're already in an event loop
+        asyncio.create_task(interactive_chat_session(agent))

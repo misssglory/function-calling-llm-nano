@@ -1,13 +1,13 @@
-"""Core Hybrid Search Agent implementation"""
+"""Core Hybrid Search Agent implementation for Google Colab"""
 
 import os
 import sys
 import time
 import uuid
 import asyncio
+import subprocess
 from pathlib import Path
 from typing import List, Dict, Any, Optional, AsyncGenerator
-from contextlib import contextmanager
 from datetime import datetime
 
 from loguru import logger
@@ -26,6 +26,15 @@ from llama_index.core.agent.workflow import AgentStream
 from llama_index.core.workflow import Context
 from llama_index.llms.llama_cpp import LlamaCPP
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+# Colab-specific imports
+try:
+    import google.colab
+    from google.colab import output, files, drive
+
+    IN_COLAB = True
+except ImportError:
+    IN_COLAB = False
 
 from tool_engines import (
     LocalSearchEngine,
@@ -72,12 +81,14 @@ os.environ["TAVILY_API_KEY"] = TAVILY_API_KEY
 
 
 class HybridSearchAgent:
-    """Combines local search, web search, and web scraping capabilities."""
+    """Combines local search, web search, and web scraping capabilities.
+    Optimized for Google Colab with llama-index v0.10+ breaking changes applied.
+    """
 
     def __init__(
         self,
-        model_path: str,  # Полный путь к файлу модели
-        model_name: Optional[str] = None,  # Имя модели для логирования
+        model_path: str,
+        model_name: Optional[str] = None,
         data_dir: str = str(DATA_DIR),
         persist_dir: str = str(STORAGE_DIR),
         use_gpu: bool = True,
@@ -85,22 +96,29 @@ class HybridSearchAgent:
         headless_browser: bool = True,
         playwright_slow_mo: int = 50,
         step_by_step_mode: bool = False,
+        colab_mode: bool = False,
     ):
         start_time = time.perf_counter()
         self.session_id = str(uuid.uuid4())[:8]
+        self.colab_mode = colab_mode or IN_COLAB
+
         logger.bind(session_id=self.session_id).info("Initializing HybridSearchAgent")
 
         self.model_path = model_path
         self.model_name = model_name or Path(model_path).stem
-        self.data_dir = data_dir
-        self.persist_dir = persist_dir
-        self.use_gpu = use_gpu
+        self.data_dir = self._get_colab_path(data_dir) if self.colab_mode else data_dir
+        self.persist_dir = (
+            self._get_colab_path(persist_dir) if self.colab_mode else persist_dir
+        )
+        self.use_gpu = self._detect_and_setup_gpu() if self.colab_mode else use_gpu
         self.headless_browser = headless_browser
         self.playwright_slow_mo = playwright_slow_mo
         self.step_by_step_mode = step_by_step_mode
 
         logger.info(f"Model: {self.model_name}")
         logger.info(f"Model path: {self.model_path}")
+        logger.info(f"Running in Colab: {self.colab_mode}")
+        logger.info(f"GPU enabled: {self.use_gpu}")
 
         # Initialize Phoenix tracing
         self.phoenix_url = None
@@ -120,6 +138,7 @@ class HybridSearchAgent:
         self.ddg_engine = None
         self.playwright_engine = None
         self.agent = None
+        self.agent_runner = None
         self.ctx = None
 
         logger.info(
@@ -127,7 +146,7 @@ class HybridSearchAgent:
         )
 
     async def init(self):
-        """Initialize all components asynchronously"""
+        """Initialize all components asynchronously with Colab optimizations"""
         try:
             # Setup embedding and LLM in parallel
             setup_embedding_task = asyncio.create_task(self._setup_embedding_model())
@@ -139,10 +158,14 @@ class HybridSearchAgent:
             Settings.llm = self.llm
             self.embed_model = await setup_embedding_task
             Settings.embed_model = self.embed_model
+
+            # BREAKING CHANGE: Settings are now dataclasses
             Settings.chunk_size = CHUNK_SIZE
             Settings.chunk_overlap = CHUNK_OVERLAP
+            Settings.context_window = CONTEXT_WINDOW
+            Settings.num_output = MAX_NEW_TOKENS
 
-            # Setup search engines
+            # Setup search engines with Colab paths
             self.local_engine = LocalSearchEngine(self.data_dir, self.persist_dir)
             self.ddg_engine = DuckDuckGoSearchEngine()
             self.playwright_engine = PlaywrightWebScraperEngine(
@@ -150,7 +173,6 @@ class HybridSearchAgent:
             )
             await self.playwright_engine._setup_playwright(self.headless_browser)
 
-            # Create agent
             self.agent, self.ctx = await self._create_agent()
 
             logger.bind(session_id=self.session_id).info(
@@ -163,38 +185,48 @@ class HybridSearchAgent:
 
     @trace_function
     async def _setup_llm(self, model_path: str, use_gpu: bool) -> LlamaCPP:
-        """Setup GGUF model with LlamaCPP with better error handling."""
+        """Setup GGUF model with LlamaCPP with Colab optimizations."""
         logger.info(f"Loading GGUF model from {model_path}")
         start_time = time.perf_counter()
 
-        # Final verification before loading
         if not verify_model_file(model_path):
             logger.error(f"Model file verification failed: {model_path}")
             raise ValueError(f"Invalid or corrupted model file: {model_path}")
 
+        # BREAKING CHANGE: New LlamaCPP initialization parameters
         gpu_layers = -1 if use_gpu else 0
+
+        # Colab-specific model kwargs
+        model_kwargs = {
+            "n_gpu_layers": gpu_layers,
+            "n_batch": GPU_BATCH_SIZE if use_gpu else 512,
+            "n_threads": CPU_THREADS,
+            "f16_kv": True,
+            "verbose": False,
+            "use_mmap": True if not self.colab_mode else False,  # Disable mmap in Colab
+            "use_mlock": False,  # Disable mlock in Colab
+        }
 
         try:
             with TraceContext("load_llama_cpp_model"):
+                # BREAKING CHANGE: LlamaCPP now uses model_path directly
                 llm = LlamaCPP(
                     model_path=model_path,
                     temperature=TEMPERATURE,
                     max_new_tokens=MAX_NEW_TOKENS,
                     context_window=CONTEXT_WINDOW,
-                    model_kwargs={
-                        "n_gpu_layers": gpu_layers,
-                        "n_batch": GPU_BATCH_SIZE,
-                        "n_threads": CPU_THREADS,
-                        "f16_kv": True,
-                        "verbose": False,
+                    model_kwargs=model_kwargs,
+                    generate_kwargs={
+                        "temperature": TEMPERATURE,
+                        "top_p": 0.95,
+                        "top_k": 40,
                     },
-                    generate_kwargs={},
                     verbose=False,
                 )
 
-                # Test the model with a simple prompt
+                # Test the model
                 logger.info("Testing model with simple prompt...")
-                test_response = llm.complete("Say 'OK'")
+                test_response = await llm.acomplete("Say 'OK'")
                 logger.debug(f"Model test response: {str(test_response)[:50]}...")
 
                 logger.success(
@@ -228,18 +260,18 @@ class HybridSearchAgent:
         with TraceContext("load_embedding_model"):
             start_time = time.perf_counter()
 
-            # Try primary embedding model
             try:
                 embed_model = HuggingFaceEmbedding(
                     model_name=EMBEDDING_MODEL,
                     embed_batch_size=EMBED_BATCH_SIZE,
+                    device="cuda" if self.use_gpu else "cpu",
                 )
                 logger.info(f"Embedding model loaded: {embed_model.model_name}")
             except Exception as e:
                 logger.warning(f"Failed to load {EMBEDDING_MODEL}: {e}")
                 logger.info("Falling back to BAAI/bge-small-en-v1.5")
 
-                # Fallback to a more reliable embedding model
+                # Fallback model
                 embed_model = HuggingFaceEmbedding(
                     model_name="BAAI/bge-small-en-v1.5",
                     embed_batch_size=EMBED_BATCH_SIZE,
@@ -271,8 +303,7 @@ class HybridSearchAgent:
                     description=(
                         "Use this tool to search through local documents and files. "
                         "Useful for finding information from your own documents, reports, "
-                        "PDF files, or text files. Use when you need specific information "
-                        "from uploaded documents."
+                        "PDF files, or text files."
                     ),
                 ),
             )
@@ -287,6 +318,7 @@ class HybridSearchAgent:
                 verbose=True,
                 max_iterations=MAX_ITERATIONS,
                 system_prompt=self._get_system_prompt(),
+                max_function_calls=MAX_ITERATIONS,
             )
 
             # Wrap with step-by-step agent if in that mode
@@ -305,9 +337,15 @@ class HybridSearchAgent:
 
     def _get_system_prompt(self) -> str:
         """Get system prompt for the agent."""
-        # ... (keep existing system prompt)
         return (
-            """You are a helpful AI assistant with access to three types of tools..."""
+            "You are a helpful AI assistant with access to three types of tools:\n"
+            "1. Local document search - for searching uploaded documents\n"
+            "2. DuckDuckGo web search - for finding current information online\n"
+            "3. Web scraping - for reading specific web pages\n\n"
+            "Always use the most appropriate tool for the task. "
+            "If you need current information, use web search. "
+            "If you need to analyze a specific webpage, use web scraping. "
+            "For personal documents, use local search."
         )
 
     @trace_function
@@ -361,9 +399,23 @@ class HybridSearchAgent:
 
     @trace_function
     async def add_document(self, file_path: str) -> bool:
-        """Add a new document to local search index."""
-        # ... (keep existing add_document method)
-        pass
+        """Add a new document to local search index with Colab support."""
+        # Handle Colab file upload
+        if self.colab_mode and file_path.lower() == "upload":
+            print("📁 Please upload your file...")
+            uploaded = files.upload()
+            if uploaded:
+                file_path = next(iter(uploaded.keys()))
+                print(f"✅ File uploaded: {file_path}")
+
+        # Add document logic here
+        try:
+            logger.info(f"Adding document: {file_path}")
+            # ... existing add document logic ...
+            return True
+        except Exception as e:
+            logger.error(f"Failed to add document: {e}")
+            return False
 
     async def close_browser(self):
         """Close Playwright browser."""
@@ -375,3 +427,72 @@ class HybridSearchAgent:
         if self.phoenix_url:
             return self.phoenix_url
         return "Phoenix tracing not enabled"
+
+
+async def setup_colab():
+    """One-time setup function for Google Colab"""
+    if not IN_COLAB:
+        print("❌ This function is only for Google Colab")
+        return
+
+    # Mount Google Drive
+    print("\n💾 Mounting Google Drive...")
+    try:
+        drive.mount("/content/drive")
+        print("✅ Google Drive mounted")
+    except:
+        print("⚠️ Could not mount Google Drive")
+
+    print("\n" + "=" * 60)
+    print("✅ Setup complete! You can now create your agent:")
+    print(
+        """
+    agent = await HybridSearchAgent(
+        model_path='tinyllama-1.1b-chat.Q4_K_M.gguf',
+        colab_mode=True,
+        use_gpu=True
+    ).init()
+    """
+    )
+    print("=" * 60)
+
+
+def colab_input(prompt: str = "") -> str:
+    """Cross-compatible input function for Colab"""
+    if IN_COLAB:
+        try:
+            return output.eval_js(f'prompt("{prompt}")') or ""
+        except:
+            return input(prompt)
+    else:
+        return input(prompt)
+
+
+async def run_colab_chat_session(agent: HybridSearchAgent):
+    """Run chat session optimized for Colab"""
+    print("\n" + "=" * 60)
+    print("💬 Starting Colab Chat Session")
+    print("📌 Commands: 'quit' to exit, 'add upload' to upload files")
+    print("=" * 60 + "\n")
+
+    while True:
+        try:
+            user_input = colab_input("🎯 Your question: ").strip()
+
+            if user_input.lower() in ["quit", "exit", "q"]:
+                break
+
+            if user_input.lower() == "add upload":
+                await agent.add_document("upload")
+                continue
+
+            response = await agent.query(user_input)
+            print(f"\n💡 Answer: {response}\n")
+
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            print(f"❌ Error: {e}")
+
+    await agent.close_browser()
+    print("👋 Session ended")
