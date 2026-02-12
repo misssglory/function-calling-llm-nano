@@ -81,9 +81,7 @@ os.environ["TAVILY_API_KEY"] = TAVILY_API_KEY
 
 
 class HybridSearchAgent:
-    """Combines local search, web search, and web scraping capabilities.
-    Optimized for Google Colab with llama-index v0.10+ breaking changes applied.
-    """
+    """Combines local search, web search, and web scraping capabilities."""
 
     def __init__(
         self,
@@ -142,7 +140,7 @@ class HybridSearchAgent:
         self.ctx = None
 
         logger.info(
-            f"HybridSearchEngine initialized: {time.perf_counter() - start_time:.2f}s"
+            f"HybridSearchEngine initialized: {time.perf_counter() - start_time:.2f}s. Step-by-step mode: {self.step_by_step_mode}"
         )
 
     async def init(self):
@@ -352,7 +350,22 @@ class HybridSearchAgent:
     async def query(self, question: str) -> str:
         """Send query to agent in standard mode."""
         if self.step_by_step_mode:
-            raise ValueError("Use query_step_by_step() for step-by-step mode")
+            # Use query_step_by_step with auto_execute=True for fully automated execution
+            response_parts = []
+            async for event in self.query_step_by_step(question, auto_execute=True):
+                # Collect response parts from the stream
+                if event.get("type") == "step_complete":
+                    if "result" in event:
+                        response_parts.append(str(event["result"]))
+                elif event.get("type") == "plan_complete":
+                    # Final response could be assembled here
+                    pass
+
+            # Combine results or return the last meaningful response
+            final_response = (
+                "\n".join(response_parts) if response_parts else "No response generated"
+            )
+            return final_response
 
         query_id = str(uuid.uuid4())[:8]
 
@@ -392,10 +405,26 @@ class HybridSearchAgent:
         if not self.step_by_step_mode or not isinstance(self.agent, StepByStepAgent):
             raise ValueError("Agent not configured for step-by-step mode")
 
+        # Set auto_execute mode on the agent
         self.agent.auto_execute = auto_execute
 
-        async for event in self.agent.run_step_by_step(question, self.ctx):
-            yield event
+        # If in auto_execute mode, automatically resume execution when paused
+        if auto_execute:
+            # Create a task to auto-resume any pauses
+            async def auto_resumer():
+                while True:
+                    await asyncio.sleep(0.1)
+                    if hasattr(self.agent, "resume_execution_flag"):
+                        self.agent.resume_execution_flag = True
+
+            resume_task = asyncio.create_task(auto_resumer())
+
+        try:
+            async for event in self.agent.run_step_by_step(question, self.ctx):
+                yield event
+        finally:
+            if auto_execute:
+                resume_task.cancel()
 
     @trace_function
     async def add_document(self, file_path: str) -> bool:

@@ -517,7 +517,7 @@ async def quick_query(question: str, **kwargs) -> str:
     colab_mode = kwargs.pop("colab_mode", IN_COLAB)
 
     agent = await create_new_session(
-        display_banner=False, headless_browser=False, colab_mode=colab_mode, **kwargs
+        display_banner=False, colab_mode=colab_mode, **kwargs
     )
     try:
         start_time = time.perf_counter()
