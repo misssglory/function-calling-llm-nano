@@ -101,8 +101,6 @@ async def main():
     # Setup tracing
     setup_tracing(enable_phoenix=not args.no_tracing, log_level=args.log_level)
 
-    logger.info(f"Args: {args}")
-
     try:
         if args.query:
             # Quick query mode

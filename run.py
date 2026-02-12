@@ -7,6 +7,7 @@ import sys
 import torch
 import asyncio
 from pathlib import Path
+from loguru import logger
 
 # Add project root to Python path
 project_root = Path(__file__).parent
@@ -78,6 +79,8 @@ if __name__ == "__main__":
     )
 
     args, unknown = parser.parse_known_args()
+
+    logger.info(f"Args: {args}")
 
     if args.colab:
         import nest_asyncio
