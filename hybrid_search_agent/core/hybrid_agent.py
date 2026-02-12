@@ -428,6 +428,30 @@ class HybridSearchAgent:
             return self.phoenix_url
         return "Phoenix tracing not enabled"
 
+    def _get_colab_path(self, path: str) -> str:
+        """Convert paths for Colab environment"""
+        path = str(path)
+
+        # Mount Google Drive if not already mounted
+        try:
+            drive.mount("/content/drive", force_remount=False)
+        except:
+            pass
+
+        # Use Drive for persistence if available
+        if "/content/drive/MyDrive" in path:
+            return path
+        elif "storage" in path or "data" in path.lower():
+            # Store persistent data in Drive
+            drive_path = f"/content/drive/MyDrive/hybrid_search/{Path(path).name}"
+            Path(drive_path).mkdir(parents=True, exist_ok=True)
+            return drive_path
+        else:
+            # Use local Colab path
+            colab_path = f"/content/{Path(path).name}"
+            Path(colab_path).mkdir(parents=True, exist_ok=True)
+            return colab_path
+
 
 async def setup_colab():
     """One-time setup function for Google Colab"""
