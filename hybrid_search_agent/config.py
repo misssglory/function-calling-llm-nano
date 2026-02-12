@@ -18,7 +18,7 @@ AVAILABLE_MODELS = {
         "size_gb": 2.1,
         "language": "ru",
         "context": 6000,
-        "default": False
+        "default": False,
     },
     "qvikhr-7b": {
         "filename": "QVikhr-7B-Instruction-Q4_K_M.gguf",
@@ -27,7 +27,7 @@ AVAILABLE_MODELS = {
         "size_gb": 4.3,
         "language": "ru",
         "context": 8000,
-        "default": False
+        "default": False,
     },
     "saiga-7b": {
         "filename": "saiga-7b-q4_K_M.gguf",
@@ -36,7 +36,7 @@ AVAILABLE_MODELS = {
         "size_gb": 4.1,
         "language": "ru",
         "context": 4000,
-        "default": False
+        "default": False,
     },
     "saiga-13b": {
         "filename": "saiga-13b-q4_K_M.gguf",
@@ -45,9 +45,8 @@ AVAILABLE_MODELS = {
         "size_gb": 7.9,
         "language": "ru",
         "context": 4000,
-        "default": False
+        "default": False,
     },
-    
     # English models
     "tinyllama": {
         "filename": "tinyllama-1.1b-chat.Q4_K_M.gguf",
@@ -56,7 +55,7 @@ AVAILABLE_MODELS = {
         "size_gb": 0.7,
         "language": "en",
         "context": 2048,
-        "default": True
+        "default": True,
     },
     "llama2-7b": {
         "filename": "llama-2-7b-chat.Q4_K_M.gguf",
@@ -65,7 +64,7 @@ AVAILABLE_MODELS = {
         "size_gb": 4.1,
         "language": "en",
         "context": 4096,
-        "default": False
+        "default": False,
     },
     "llama2-13b": {
         "filename": "llama-2-13b-chat.Q4_K_M.gguf",
@@ -74,7 +73,7 @@ AVAILABLE_MODELS = {
         "size_gb": 7.9,
         "language": "en",
         "context": 4096,
-        "default": False
+        "default": False,
     },
     "mistral-7b": {
         "filename": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
@@ -83,7 +82,7 @@ AVAILABLE_MODELS = {
         "size_gb": 4.1,
         "language": "en",
         "context": 8192,
-        "default": False
+        "default": False,
     },
     "zephyr-7b": {
         "filename": "zephyr-7b-beta.Q4_K_M.gguf",
@@ -92,7 +91,7 @@ AVAILABLE_MODELS = {
         "size_gb": 4.1,
         "language": "en",
         "context": 4096,
-        "default": False
+        "default": False,
     },
     "phi-2": {
         "filename": "phi-2.Q4_K_M.gguf",
@@ -101,7 +100,7 @@ AVAILABLE_MODELS = {
         "size_gb": 1.6,
         "language": "en",
         "context": 2048,
-        "default": False
+        "default": False,
     },
     "neural-chat-7b": {
         "filename": "neural-chat-7b-v3-1.Q4_K_M.gguf",
@@ -110,7 +109,7 @@ AVAILABLE_MODELS = {
         "size_gb": 4.1,
         "language": "en",
         "context": 4096,
-        "default": False
+        "default": False,
     },
     "openchat-7b": {
         "filename": "openchat-3.5-7b.Q4_K_M.gguf",
@@ -119,7 +118,7 @@ AVAILABLE_MODELS = {
         "size_gb": 4.1,
         "language": "en",
         "context": 8192,
-        "default": False
+        "default": False,
     },
     "dolphin-7b": {
         "filename": "dolphin-2.2.1-mistral-7b.Q4_K_M.gguf",
@@ -128,11 +127,11 @@ AVAILABLE_MODELS = {
         "size_gb": 4.1,
         "language": "en",
         "context": 8192,
-        "default": False
-    }
+        "default": False,
+    },
 }
 
-DEFAULT_MODEL_PATH=""
+DEFAULT_MODEL_PATH = ""
 # Tavily API
 TAVILY_API_KEY = "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"
 
@@ -145,8 +144,8 @@ PDFS_DIR = Path("./pdfs")
 STEP_HISTORY_DIR = Path("./step_history")
 
 # Embedding settings
-# EMBEDDING_MODEL = "deepvk/USER2-small"
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+EMBEDDING_MODEL = "deepvk/USER2-small"
+# EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 FALLBACK_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 CHUNK_SIZE = 512
 CHUNK_OVERLAP = 50
@@ -166,37 +165,47 @@ HEADLESS_BROWSER = True
 # Tracing settings
 ENABLE_PHOENIX_TRACING = True
 
+
 # Create directories
 def create_directories():
     """Create all necessary directories"""
-    directories = [DATA_DIR, STORAGE_DIR, LOGS_DIR, SCREENSHOTS_DIR, PDFS_DIR, STEP_HISTORY_DIR, MODELS_DIR]
+    directories = [
+        DATA_DIR,
+        STORAGE_DIR,
+        LOGS_DIR,
+        SCREENSHOTS_DIR,
+        PDFS_DIR,
+        STEP_HISTORY_DIR,
+        MODELS_DIR,
+    ]
     for directory in directories:
         directory.mkdir(exist_ok=True)
     return directories
 
+
 __all__ = [
-    'CONTEXT_WINDOW',
-    'MODELS_DIR',
-    'AVAILABLE_MODELS',
-    'TAVILY_API_KEY',
-    'DATA_DIR',
-    'STORAGE_DIR',
-    'LOGS_DIR',
-    'SCREENSHOTS_DIR',
-    'PDFS_DIR',
-    'STEP_HISTORY_DIR',
-    'EMBEDDING_MODEL',
-    'FALLBACK_EMBEDDING_MODEL',
-    'CHUNK_SIZE',
-    'CHUNK_OVERLAP',
-    'EMBED_BATCH_SIZE',
-    'TEMPERATURE',
-    'MAX_NEW_TOKENS',
-    'GPU_BATCH_SIZE',
-    'CPU_THREADS',
-    'MAX_ITERATIONS',
-    'PLAYWRIGHT_SLOW_MO',
-    'HEADLESS_BROWSER',
-    'ENABLE_PHOENIX_TRACING',
-    'create_directories',
+    "CONTEXT_WINDOW",
+    "MODELS_DIR",
+    "AVAILABLE_MODELS",
+    "TAVILY_API_KEY",
+    "DATA_DIR",
+    "STORAGE_DIR",
+    "LOGS_DIR",
+    "SCREENSHOTS_DIR",
+    "PDFS_DIR",
+    "STEP_HISTORY_DIR",
+    "EMBEDDING_MODEL",
+    "FALLBACK_EMBEDDING_MODEL",
+    "CHUNK_SIZE",
+    "CHUNK_OVERLAP",
+    "EMBED_BATCH_SIZE",
+    "TEMPERATURE",
+    "MAX_NEW_TOKENS",
+    "GPU_BATCH_SIZE",
+    "CPU_THREADS",
+    "MAX_ITERATIONS",
+    "PLAYWRIGHT_SLOW_MO",
+    "HEADLESS_BROWSER",
+    "ENABLE_PHOENIX_TRACING",
+    "create_directories",
 ]
