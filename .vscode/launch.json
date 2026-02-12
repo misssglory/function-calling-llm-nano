@@ -1,0 +1,144 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Hybrid Search Agent - QVikhr 3B (Step-by-Step)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/run.py",
+            "args": [
+                "--step-by-step",
+                "--visible",
+                "--model", 
+                "qvikhr-3b"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "cwd": "${workspaceFolder}",
+            "subProcess": true
+        },
+        {
+            "name": "Hybrid Search Agent - TinyLlama (Step-by-Step)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/run.py",
+            "args": [
+                "--step-by-step",
+                "--visible",
+                "--model",
+                "tinyllama"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "cwd": "${workspaceFolder}",
+            "subProcess": true
+        },
+        {
+            "name": "Hybrid Search Agent - Mistral 7B",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/run.py",
+            "args": [
+                "--model",
+                "mistral-7b"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "cwd": "${workspaceFolder}",
+            "subProcess": true
+        },
+        {
+            "name": "Hybrid Search Agent - Quick Query",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/run.py",
+            "args": [
+                "--model",
+                "tinyllama",
+                "--query",
+                "What is artificial intelligence?"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "cwd": "${workspaceFolder}",
+            "subProcess": true
+        },
+        {
+            "name": "Download Model",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/download_model.py",
+            "args": [
+                "qvikhr-3b"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "List Downloaded Models",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/run.py",
+            "args": [
+                "--list-models"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Debug Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Python: Attach",
+            "type": "python",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            }
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Download & Run QVikhr",
+            "configurations": [
+                "Download Model",
+                "Hybrid Search Agent - QVikhr 3B (Step-by-Step)"
+            ],
+            "stopAll": true
+        }
+    ]
+}
