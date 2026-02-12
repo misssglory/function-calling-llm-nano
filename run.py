@@ -86,6 +86,7 @@ if __name__ == "__main__":
         import nest_asyncio
 
         nest_asyncio.apply()
+        logger.info("Next asyncio applied")
 
     if args.list_models:
         list_downloaded_models()
