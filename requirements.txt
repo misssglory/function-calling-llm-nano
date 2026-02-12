@@ -1,0 +1,9 @@
+torch
+llama-index
+loguru
+llama-index-tools-playwright
+llama-index 
+llama-index-llms-llama-cpp 
+llama-index-readers-file 
+llama-index-tools-duckduckgo 
+duckduckgo-search
