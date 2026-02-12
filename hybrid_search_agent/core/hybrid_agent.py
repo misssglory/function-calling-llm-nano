@@ -110,7 +110,7 @@ class HybridSearchAgent:
         self.persist_dir = (
             self._get_colab_path(persist_dir) if self.colab_mode else persist_dir
         )
-        self.use_gpu = self._detect_and_setup_gpu() if self.colab_mode else use_gpu
+        self.use_gpu = use_gpu
         self.headless_browser = headless_browser
         self.playwright_slow_mo = playwright_slow_mo
         self.step_by_step_mode = step_by_step_mode
