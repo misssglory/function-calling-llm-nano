@@ -8,3 +8,6 @@ llama-index-readers-file
 llama-index-tools-duckduckgo
 llama-index-embeddings-huggingface
 duckduckgo-search
+openinference-instrumentation
+openinference-instrumentation-llama-index
+arize-phoenix
