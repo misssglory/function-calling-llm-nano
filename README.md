@@ -92,7 +92,7 @@ python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install dependencies
-pip install -r requirements.txt
+CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1  uv pip install -r requirements.txt --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 #--no-cache-dir --force-reinstall
 
 # Install Playwright browsers
 playwright install chromium
