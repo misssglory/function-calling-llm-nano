@@ -526,7 +526,7 @@ async def quick_query(question: str, **kwargs) -> str:
         logger.info(f"Response time: {time.perf_counter() - start_time:.2f}s")
         return response
     except Exception as e:
-        logger.error(f"Error in quick query: {e}")
+        logger.trace(f"Error in quick query: {e}")
         return f"Error: {str(e)}"
     finally:
         await agent.close_browser()

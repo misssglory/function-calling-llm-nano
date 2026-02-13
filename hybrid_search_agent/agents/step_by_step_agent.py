@@ -1,4 +1,4 @@
-"""Step-by-step execution agent using composition with critic validation"""
+"""Step-by-step execution agent using composition with detailed actor-critic validation"""
 
 from typing import List, Dict, Any, AsyncGenerator, Optional
 from datetime import datetime
@@ -6,24 +6,31 @@ import asyncio
 import uuid
 import json
 import re
+import time
 
 from llama_index.core.agent import ReActAgent
-from llama_index.core.agent.workflow import ToolCallResult, AgentStream
+from llama_index.core.agent.workflow import ToolCallResult, AgentStream, AgentOutput
 from llama_index.core.workflow import Context
 
-from hybrid_search_agent.models.step_models import Step, StepStatus, ExecutionPlan
+from hybrid_search_agent.core import step_history
+from hybrid_search_agent.models.step_models import (
+    Step,
+    StepStatus,
+    ExecutionPlan,
+    ActorCriticStep,
+)
 from hybrid_search_agent.core.step_history import StepHistory
 from trace_context import trace_function, TraceContext
 from loguru import logger
 
 
 class StepByStepAgent:
-    """Agent with step-by-step execution, history preservation, and critic validation"""
+    """Agent with step-by-step execution and detailed actor-critic analysis"""
 
     def __init__(self, agent: ReActAgent, step_history: StepHistory):
         self.agent = agent
         self.step_history = step_history
-        self.current_step: Optional[Step] = None
+        self.current_step: Optional[ActorCriticStep] = None
         self.auto_execute = False
         self.skip_step = False
         self.continue_execution = True
@@ -31,7 +38,7 @@ class StepByStepAgent:
 
     @trace_function
     async def run_step_by_step(self, query: str, ctx: Context) -> AsyncGenerator:
-        """Execute query step by step with user control and critic validation"""
+        """Execute query step by step with detailed actor-critic analysis"""
 
         # Reset flags
         self.skip_step = False
@@ -43,10 +50,19 @@ class StepByStepAgent:
         yield {"type": "plan_created", "plan": plan}
 
         # Generate execution plan from LLM
-        plan_steps = await self._generate_execution_plan(query)
+        plan_steps = await self._generate_execution_plan(query, ctx)
 
-        for step_desc in plan_steps:
-            step = plan.add_step(step_desc)
+        for i, step_desc in enumerate(plan_steps):
+            step = ActorCriticStep(
+                id=f"step_{i+1}",
+                description=step_desc,
+                status=StepStatus.PENDING,
+                actor_result=None,
+                actor_metadata={},
+                critic_analysis=None,
+                critic_metadata={},
+            )
+            plan.add_step(step)
             yield {"type": "step_created", "step": step}
 
         # Execute steps sequentially
@@ -67,84 +83,137 @@ class StepByStepAgent:
             yield {"type": "step_start", "step": step}
 
             try:
-                # Execute current step using the agent's run method
-                result = await self._execute_step(step.description, ctx)
+                # ACTOR: Execute current step
+                actor_start = time.perf_counter()
+                actor_result, tool_calls = await self._execute_step(
+                    step.description, ctx
+                )
+                actor_end = time.perf_counter()
 
-                # CRITIC STEP: Validate if the step was actually completed successfully
+                step.actor_result = actor_result
+                step.actor_metadata = {
+                    "execution_start": datetime.now().isoformat(),
+                    "execution_duration": round(actor_end - actor_start, 3),
+                    "tool_calls": tool_calls,
+                    "timestamp": datetime.now().isoformat(),
+                }
+                step.tool_calls = tool_calls
+
+                yield {
+                    "type": "actor_complete",
+                    "step": step,
+                    "actor_result": actor_result,
+                    "actor_metadata": step.actor_metadata,
+                }
+
+                # CRITIC: Validate the step
+                critic_start = time.perf_counter()
                 validation_result = await self._critic_step(
                     step_description=step.description,
                     original_query=query,
-                    step_result=result,
+                    step_result=actor_result,
+                    tool_calls=tool_calls,
                     ctx=ctx,
                 )
+                critic_end = time.perf_counter()
 
+                # Enhance critic result with metadata
+                step.critic_analysis = validation_result
+                step.critic_metadata = {
+                    "execution_start": datetime.now().isoformat(),
+                    "execution_duration": round(critic_end - critic_start, 3),
+                    "validation_success": validation_result.get("success", False),
+                    "confidence_score": validation_result.get("confidence", 0.7),
+                    "validation_method": validation_result.get("method", "llm"),
+                    "timestamp": datetime.now().isoformat(),
+                }
+
+                # Determine step status based on critic
                 if validation_result["success"]:
                     step.status = StepStatus.COMPLETED
-                    step.result = str(result)[:1000]
-                    step.critic_analysis = validation_result.get("analysis", "")
 
                     yield {
-                        "type": "step_complete",
+                        "type": "critic_validation_passed",
                         "step": step,
-                        "result": result,
-                        "critic_analysis": validation_result.get("analysis", ""),
+                        "critic_analysis": validation_result,
+                        "critic_metadata": step.critic_metadata,
                     }
                 else:
-                    # Step failed critic validation
                     step.status = StepStatus.FAILED
                     step.error = validation_result.get(
                         "error", "Step failed validation"
                     )
-                    step.critic_analysis = validation_result.get("analysis", "")
 
                     yield {
-                        "type": "step_failed",
+                        "type": "critic_validation_failed",
                         "step": step,
-                        "error": step.error,
-                        "critic_analysis": validation_result.get("analysis", ""),
+                        "critic_analysis": validation_result,
+                        "critic_metadata": step.critic_metadata,
                     }
 
-                    # Ask user whether to continue on validation failure
                     if not self.auto_execute:
                         decision = yield {
-                            "type": "ask_continue",
+                            "type": "ask_continue_after_failure",
                             "step": step,
-                            "error": step.error,
-                            "critic_analysis": validation_result.get("analysis", ""),
+                            "critic_analysis": validation_result,
+                            "critic_metadata": step.critic_metadata,
                         }
                         if decision and not decision.get("continue", False):
                             break
 
             except Exception as e:
+                # Handle execution errors with critic analysis
                 step.status = StepStatus.FAILED
                 step.error = str(e)
 
-                # CRITIC STEP: Analyze the failure
+                # CRITIC: Analyze the failure
+                critic_start = time.perf_counter()
+
+                logger.error("run_step_by_step error")
+                logger.exception(e)
+
                 failure_analysis = await self._analyze_failure(
                     step_description=step.description, error=str(e), ctx=ctx
                 )
-                step.critic_analysis = failure_analysis
+                critic_end = time.perf_counter()
 
-                yield {
-                    "type": "step_failed",
-                    "step": step,
+                step.critic_analysis = {
+                    "success": False,
                     "error": str(e),
-                    "critic_analysis": failure_analysis,
+                    "analysis": failure_analysis,
+                    "recommendations": self._generate_recommendations(
+                        step.description, str(e)
+                    ),
+                }
+                step.critic_metadata = {
+                    "execution_start": datetime.now().isoformat(),
+                    "execution_duration": round(critic_end - critic_start, 3),
+                    "validation_success": False,
+                    "error_type": type(e).__name__,
+                    "timestamp": datetime.now().isoformat(),
                 }
 
-                # Ask user whether to continue
+                yield {
+                    "type": "step_failed_with_analysis",
+                    "step": step,
+                    "error": str(e),
+                    "critic_analysis": step.critic_analysis,
+                    "critic_metadata": step.critic_metadata,
+                }
+
                 if not self.auto_execute:
                     decision = yield {
-                        "type": "ask_continue",
+                        "type": "ask_continue_after_error",
                         "step": step,
                         "error": str(e),
-                        "critic_analysis": failure_analysis,
+                        "critic_analysis": step.critic_analysis,
                     }
                     if decision and not decision.get("continue", False):
                         break
 
             finally:
                 step.end_time = datetime.now()
+                step.duration = (step.end_time - step.start_time).total_seconds()
 
             # Pause between steps if not in auto mode
             if not self.auto_execute and step != plan.steps[-1]:
@@ -157,37 +226,61 @@ class StepByStepAgent:
         # Save the plan
         self.step_history.save_plan()
 
-        yield {"type": "plan_complete", "plan": plan}
+        # Generate execution summary
+        summary = self._generate_execution_summary(plan)
+        yield {"type": "plan_complete", "plan": plan, "summary": summary}
 
     @trace_function
     async def _critic_step(
-        self, step_description: str, original_query: str, step_result: Any, ctx: Context
+        self,
+        step_description: str,
+        original_query: str,
+        step_result: Any,
+        tool_calls: List[Dict],
+        ctx: Context,
     ) -> Dict[str, Any]:
-        """Critic step that validates if the step was successfully completed"""
+        """Enhanced critic with detailed validation and confidence scoring"""
         critic_id = str(uuid.uuid4())[:8]
 
         critic_prompt = f"""
-        You are a step critic that validates if an execution step was successfully completed.
+        You are a rigorous step critic analyzing if an execution step was successfully completed.
         
-        Original user query: {original_query}
+        ORIGINAL USER QUERY: {original_query}
         
-        Step that was executed: {step_description}
+        STEP EXECUTED: {step_description}
         
-        Step result: {step_result}
+        STEP RESULT: {step_result}
         
-        Your task: Analyze if this step was ACTUALLY completed successfully.
+        TOOL CALLS MADE: {json.dumps(tool_calls, indent=2, ensure_ascii=False)}
         
-        Consider:
-        1. Does the result contain meaningful data relevant to the step?
-        2. Are there any error indicators in the result (e.g., "error", "failed", "not found", "unable to")?
-        3. Was the expected action actually performed?
-        4. Is the result complete or truncated?
-        5. Does the result make sense for the step?
+        Your task: Perform a detailed validation of this step.
         
-        Return a JSON object with:
-        1. "success": boolean (true if step completed successfully)
-        2. "analysis": string (brief explanation of your reasoning)
-        3. "error": string (only if success=false, describe what went wrong)
+        VALIDATION CRITERIA:
+        1. **Relevance**: Does the result directly address what the step intended to do?
+        2. **Completeness**: Is the result complete or truncated?
+        3. **Accuracy**: Does the result contain the expected type of information?
+        4. **Error Detection**: Are there any error indicators in the result?
+        5. **Tool Usage**: Were the appropriate tools used correctly?
+        6. **Data Quality**: Is the result meaningful and usable?
+        
+        Return a JSON object with the following structure:
+        {{
+            "success": boolean,
+            "confidence": float (0.0-1.0),
+            "analysis": {{
+                "summary": "Brief overall assessment",
+                "relevance": {{"score": 0-10, "reasoning": "..."}},
+                "completeness": {{"score": 0-10, "reasoning": "..."}},
+                "accuracy": {{"score": 0-10, "reasoning": "..."}},
+                "error_check": {{"found_errors": boolean, "details": "..."}},
+                "tool_usage": {{"appropriate": boolean, "reasoning": "..."}},
+                "data_quality": {{"score": 0-10, "reasoning": "..."}}
+            }},
+            "error": "Detailed error description if success=false, otherwise null",
+            "recommendations": ["Suggestion 1", "Suggestion 2"],
+            "next_steps": ["Recommended next step 1", "Recommended next step 2"],
+            "method": "llm"
+        }}
         
         Return ONLY the JSON object, no other text.
         """
@@ -205,8 +298,7 @@ class StepByStepAgent:
             if json_match:
                 validation = json.loads(json_match.group())
             else:
-                # Fallback validation
-                validation = self._fallback_critic(step_result)
+                validation = self._fallback_critic(step_result, tool_calls)
 
             logger.debug(
                 f"Critic validation for '{step_description[:50]}...': {validation.get('success', False)}"
@@ -215,43 +307,195 @@ class StepByStepAgent:
 
         except Exception as e:
             logger.error(f"Error in critic step: {e}")
-            return self._fallback_critic(step_result)
+            return self._fallback_critic(step_result, tool_calls)
 
     @trace_function
+    async def _execute_step(
+        self, step_description: str, ctx: Context
+    ) -> tuple[str, List[Dict]]:
+        """Execute step and return result with detailed tool call information"""
+        step_id = str(uuid.uuid4())[:8]
+
+        # Get previous steps context with actor-critic history
+        steps_history = self._get_detailed_steps_history()
+
+        step_context = f"""
+        EXECUTE THIS SPECIFIC STEP: "{step_description}"
+        
+        EXECUTION CONTEXT:
+        {steps_history}
+        
+        EXECUTION REQUIREMENTS:
+        1. Use ONLY the tools necessary for this specific step
+        2. Do NOT continue to next steps
+        3. Return ONLY the result of this step
+        4. Be concise but complete
+        5. Include ALL data retrieved/generated
+        
+        AVAILABLE TOOLS:
+        - local_document_search(query) - Search local documents
+        - duckduckgo_search(query) - Search the internet
+        - navigate_to(url) - Navigate to URL
+        - extract_text() - Extract text from current page
+        - click(selector) - Click on elements
+        - extract_hyperlinks() - Extract hyperlinks from page  
+        - navigate_back() - Go back to previous page
+        
+        Execute now and return the result:
+        """
+
+        logger.debug(
+            f"execute_step: <red>description</red>: {step_description} <red>history</red>: {step_history}"
+        )
+
+        try:
+            _events = []
+            with TraceContext(
+                "execute_step", step_id=step_id, step_description=step_description[:50]
+            ):
+
+                logger.debug(f"Step context: {step_context}")
+                handler = self.agent.run(step_context, ctx=ctx)
+
+                async for ev in handler.stream_events():
+                    if isinstance(ev, AgentStream):
+                        continue
+                    logger.debug(type(ev))
+                    _events.append(ev)
+                    if isinstance(ev, ToolCallResult):
+                        logger.debug(f"Tool Used: {ev.tool_name}")
+                        logger.debug(f"Inputs: {ev.tool_kwargs}")
+                        logger.debug(f"Output: {ev.tool_output}")
+                    if isinstance(ev, AgentOutput):
+                        break
+
+                response = await handler
+                response_str = str(response)
+
+                logger.debug(f"Step response: {response_str}")
+                # Clean and validate response
+                response_str = self._clean_step_result(response_str)
+
+            # Extract detailed tool call information
+            tool_calls = []
+            if hasattr(handler, "events"):
+                for event in handler.events:
+                    if hasattr(event, "tool_name"):
+                        tool_calls.append(
+                            {
+                                "tool_name": event.tool_name,
+                                "tool_input": getattr(event, "tool_kwargs", {}),
+                                "tool_output": str(getattr(event, "tool_output", ""))[
+                                    :500
+                                ],
+                                "timestamp": datetime.now().isoformat(),
+                                "success": not hasattr(event, "error")
+                                or event.error is None,
+                            }
+                        )
+
+            # If no tool calls detected but step should use tools, add note
+            if not tool_calls and any(
+                tool in step_description.lower()
+                for tool in ["search", "navigate", "extract", "click", "scrape"]
+            ):
+                tool_calls.append(
+                    {
+                        "tool_name": "no_tool_used",
+                        "note": "Step was expected to use a tool but none were called",
+                        "timestamp": datetime.now().isoformat(),
+                        "success": False,
+                    }
+                )
+
+            return response_str[:5000], tool_calls
+
+        except Exception as e:
+            logger.error(f"Error executing step '{step_description[:50]}...': {e}")
+            raise
+
     async def _analyze_failure(
         self, step_description: str, error: str, ctx: Context
     ) -> str:
-        """Analyze why a step failed"""
+        """Detailed failure analysis with root cause identification"""
         analysis_id = str(uuid.uuid4())[:8]
 
         analysis_prompt = f"""
-        Analyze why this step failed:
+        Perform a detailed failure analysis:
         
-        Step: {step_description}
+        FAILED STEP: {step_description}
         
-        Error: {error}
+        ERROR: {error}
         
-        Provide a brief, helpful analysis of:
-        1. What went wrong
-        2. Possible reasons for the failure
-        3. Suggestions for fixing or alternative approaches
+        Analyze:
+        1. ROOT CAUSE: What fundamentally caused this failure?
+        2. CONTEXT FACTORS: What conditions contributed?
+        3. IMPACT: What functionality is affected?
+        4. SOLUTION: Specific steps to fix
+        5. PREVENTION: How to avoid in future
         
-        Keep it concise (2-3 sentences).
+        Provide concise, actionable analysis:
         """
+
+        logger.debug(f"Analyze error: description: {step_description} error: {error}")
 
         try:
             with TraceContext("analyze_failure", analysis_id=analysis_id):
                 handler = self.agent.run(analysis_prompt, ctx=ctx)
                 response = await handler
+
+                logger.debug(f"Analyze error response: {str(response)}")
+
                 return str(response).strip()
         except:
             return f"Step failed with error: {error}"
 
-    def _fallback_critic(self, step_result: Any) -> Dict[str, Any]:
-        """Fallback critic when LLM validation fails"""
+    def _generate_recommendations(self, step_description: str, error: str) -> List[str]:
+        """Generate specific recommendations for failure recovery"""
+        recommendations = []
+
+        if "timeout" in error.lower() or "navigation" in error.lower():
+            recommendations.extend(
+                [
+                    "Check if the URL is accessible",
+                    "Verify internet connection",
+                    "Try increasing timeout settings",
+                ]
+            )
+        elif "not found" in error.lower() or "no results" in error.lower():
+            recommendations.extend(
+                [
+                    "Try different search terms",
+                    "Check if the element/page exists",
+                    "Verify the URL is correct",
+                ]
+            )
+        elif "tool" in error.lower() or "function" in error.lower():
+            recommendations.extend(
+                [
+                    "Verify tool parameters are correct",
+                    "Check if required dependencies are installed",
+                    "Ensure tool is properly initialized",
+                ]
+            )
+        else:
+            recommendations.extend(
+                [
+                    "Review step requirements",
+                    "Check for typos or incorrect parameters",
+                    "Try alternative approach",
+                ]
+            )
+
+        return recommendations
+
+    def _fallback_critic(
+        self, step_result: Any, tool_calls: List[Dict]
+    ) -> Dict[str, Any]:
+        """Enhanced fallback critic with heuristic-based validation"""
         result_str = str(step_result).lower()
 
-        # Heuristic-based validation
+        # Error indicators
         error_indicators = [
             "error",
             "failed",
@@ -263,243 +507,287 @@ class StepByStepAgent:
             "empty",
             "none",
             "null",
+            "404",
+            "timeout",
+            "forbidden",
+            "unauthorized",
         ]
 
         success = True
         error_msg = None
+        confidence = 0.7
+        analysis_scores = {}
 
+        # Check for error indicators
         for indicator in error_indicators:
             if indicator in result_str:
                 success = False
                 error_msg = f"Step result contains error indicator: '{indicator}'"
+                confidence = 0.3
                 break
+
+        # Check tool usage
+        tool_usage_appropriate = bool(tool_calls)
+        if not tool_calls:
+            confidence -= 0.2
+            tool_usage_appropriate = False
+
+        # Check result length for completeness
+        completeness_score = min(10, len(result_str) / 100)
 
         return {
             "success": success,
-            "analysis": "Heuristic-based validation"
-            + (f": {error_msg}" if error_msg else ""),
+            "confidence": confidence,
+            "analysis": {
+                "summary": "Heuristic-based validation",
+                "relevance": {"score": 5, "reasoning": "Heuristic assessment"},
+                "completeness": {
+                    "score": completeness_score,
+                    "reasoning": f"Result length: {len(result_str)} chars",
+                },
+                "accuracy": {"score": 5, "reasoning": "Heuristic assessment"},
+                "error_check": {
+                    "found_errors": not success,
+                    "details": error_msg if error_msg else "No errors detected",
+                },
+                "tool_usage": {
+                    "appropriate": tool_usage_appropriate,
+                    "reasoning": f"{len(tool_calls)} tools called",
+                },
+                "data_quality": {"score": 5, "reasoning": "Heuristic assessment"},
+            },
             "error": error_msg,
+            "recommendations": [
+                "Review step execution",
+                "Check tool usage",
+                "Verify result completeness",
+            ],
+            "next_steps": [
+                "Continue to next step" if success else "Retry step or skip"
+            ],
+            "method": "heuristic",
         }
 
-    @trace_function
-    async def _generate_execution_plan(self, query: str) -> List[str]:
-        """Generate execution plan from query using agent.run()"""
+    async def _generate_execution_plan(self, query: str, ctx: Context) -> List[str]:
+        """Generate detailed execution plan with specific tool actions"""
         plan_query_id = str(uuid.uuid4())[:8]
 
+        tools_prompt = """AVAILABLE TOOLS:
+        🔍 LOCAL_SEARCH: local_document_search(query)
+        🌐 WEB_SEARCH: duckduckgo_search(query)
+        🧭 NAVIGATION: navigate_to(url)
+        📝 TEXT: extract_text()
+        🖱️ INTERACTION: click(selector)
+        🔗 LINKS: extract_hyperlinks()
+        ↩️ BACK: navigate_back()
+        """
+
+        tools_prompt = ""
+
         prompt = f"""
-        Break down the following request into a sequence of logical steps:
+        Create a detailed execution plan for: {query}
         
-        Request: {query}
+        REQUIREMENTS:
+        1. Each step must specify EXACT tool and action
+        2. Steps must be in logical sequence
+        3. Include specific parameters where known
+        4. Maximum 5 steps
         
-        Plan requirements:
-        1. Each step should be a specific action (e.g., "Search for X using duckduckgo_search", "Navigate to Y", "Extract text from page")
-        2. Steps should be in logical sequence
-        3. Each step must use available tools
-        4. Steps should be granular enough for control
-        5. Maximum 5-7 steps per plan
+        {tools_prompt}
         
-        Available tools:
-        - local_document_search: search local documents
-        - duckduckgo_search: search the internet
-        - navigate_to: navigate to URL
-        - extract_text: extract text from page
-        - click: click on elements
-        - extract_hyperlinks: extract hyperlinks from page
-        - scrape_text: scrape text from current page
-        - take_screenshot: take screenshot of current page
-        - save_as_pdf: save current page as PDF
+        FORMAT: One step per line, no numbers, no prefixes
+        EXAMPLE:
+Search for iqdoc.ai website using duckduckgo_search
+Navigate to https://iqdoc.ai
+Extract all text from the page
+Save extracted text as response
         
-        Format: simple list of steps, one per line, no numbering, no additional text.
-        Example:
-        Search for recent AI news using duckduckgo_search
-        Navigate to the first result URL
-        Extract text from the page
-        Extract hyperlinks from the page
-        
-        Return only the list of steps, nothing else. Do not include "Thought:" or "Answer:" or any other prefixes.
+        Return ONLY the steps, nothing else:
         """
 
         try:
+            _events = []
             with TraceContext("generate_execution_plan", query_id=plan_query_id):
-                handler = self.agent.run(prompt, ctx=None)
+                logger.info(prompt)
+                logger.debug(ctx)
+                handler = self.agent.run(prompt, ctx=ctx)
+                async for ev in handler.stream_events():
+                    logger.debug(type(ev))
+                    if isinstance(ev, AgentStream):
+                        continue
+
+                    logger.debug(ev)
+                    _events.append(ev)
+                    if isinstance(ev, ToolCallResult):
+                        logger.debug(f"Tool Used: {ev.tool_name}")
+                        logger.debug(f"Inputs: {ev.tool_kwargs}")
+                        logger.debug(f"Output: {ev.tool_output}")
+
                 response = await handler
                 response_text = str(response)
+                # async for ev in handler.stream_events():
 
-            # Parse steps from response
+            # for ev in self.agent.events:
+            #     if isinstance(ev, ToolCallResult):
+            #         logger.debug(f"Tool Used: {ev.tool_name}")
+            #         logger.debug(f"Inputs: {ev.tool_kwargs}")
+            #         logger.debug(f"Output: {ev.tool_output}")
+
+            logger.debug(
+                f"generate_execution_plan: Response: <green>{response_text}</green>"
+            )
+            # Parse and clean steps
             steps = []
             for line in response_text.split("\n"):
                 line = line.strip()
 
-                # Skip empty lines and markdown code blocks
-                if not line or line.startswith(("```", "`", "#")):
+                # Skip invalid lines
+                if not line or len(line) < 10:
+                    continue
+                if line.startswith(("```", "`", "#", "Step", "step")):
+                    continue
+                if "[your answer" in line.lower():
                     continue
 
-                # Remove common prefixes
-                line = re.sub(r"^(Step\s*\d+[:.]\s*)", "", line, flags=re.IGNORECASE)
-                line = re.sub(r"^(\d+[.)]\s*)", "", line)
-                line = re.sub(r"^[-*]\s+", "", line)
+                # Clean formatting
+                line = re.sub(r"^(\d+[.)]\s*|\-\s*|\*\s*)", "", line)
 
-                # Skip lines that are just "Thought:" or "Answer:" or contain instruction templates
-                if (
-                    line.startswith(("Thought:", "Answer:", "Action:", "Observation:"))
-                    or "[your answer here" in line.lower()
-                    or "use the appropriate tool" in line.lower()
-                ):
-                    continue
-
-                # Only add lines that look like actual step descriptions (more than 10 chars, not just instructions)
-                if len(line) > 15 and not any(
-                    x in line.lower()
-                    for x in [
-                        "use the appropriate tool",
-                        "be specific with tool",
-                        "return only the result",
-                        "keep the response concise",
-                        "execute now",
-                        "previous steps history",
-                        "available tools",
+                # Add if it looks like a valid step
+                if any(
+                    tool in line.lower()
+                    for tool in [
+                        "search",
+                        "navigate",
+                        "extract",
+                        "click",
+                        "scrape",
+                        "save",
+                        "take",
                     ]
                 ):
                     steps.append(line)
 
-            # If we didn't get any valid steps, use default plan
-            if not steps:
-                logger.warning("No valid steps generated, using default plan")
-                steps = [
-                    f"Search for information about '{query}' using duckduckgo_search",
-                    "Navigate to the first relevant result",
-                    "Extract text from the page",
-                    "Summarize the extracted information",
-                ]
+            logger.debug(f"Steps: <green>{steps}</green>")
 
-            logger.debug(f"Generated {len(steps)} steps for plan")
-            return steps[:7]
+            if not steps:
+                raise Exception("Steps are empty")
+
+            return (
+                steps[:7]
+                # if steps
+                # else [
+                #     f"Search for {query} using duckduckgo_search",
+                #     "Navigate to the main website URL",
+                #     "Extract all text content from the page",
+                #     "Return the extracted text as result",
+                # ]
+            )
 
         except Exception as e:
-            logger.error(f"Error generating execution plan: {e}")
+            logger.exception(f"Error generating plan: {e}")
             return [
-                f"Search for '{query}' using duckduckgo_search",
-                "Navigate to the first relevant result",
-                "Extract text from the page",
-                "Summarize the extracted information",
+                f"Search for {query} using duckduckgo_search",
+                "Navigate to the main website URL",
+                "Extract all text content from the page",
+                "Return the extracted text as result",
             ]
 
-    @trace_function
-    async def _execute_step(self, step_description: str, ctx: Context) -> str:
-        """Execute a single step using agent.run()"""
-        step_id = str(uuid.uuid4())[:8]
-
-        # Get previous steps context
-        steps_history = self._get_steps_history()
-
-        # CRITICAL FIX: Provide clear instructions WITHOUT including the step description in a way
-        # that gets misinterpreted as the actual output
-        step_context = f"""
-        Current task: Execute this specific step: "{step_description}"
-        
-        Previous steps:
-        {steps_history}
-        
-        Instructions:
-        1. Use the appropriate tool for this step
-        2. Execute ONLY this step, do not continue to next steps
-        3. Return the RESULT of executing this step, not the instructions
-        4. Be concise
-        
-        Execute the step and return the result:
-        """
-
-        try:
-            with TraceContext(
-                "execute_step", step_id=step_id, step_description=step_description[:50]
-            ):
-                handler = self.agent.run(step_context, ctx=ctx)
-
-                async for ev in handler.stream_events():
-                    if isinstance(ev, AgentStream):
-                        pass
-
-                response = await handler
-                response_str = str(response)
-
-                # Clean up response - remove any instruction text that might have leaked
-                response_str = self._clean_step_result(response_str)
-
-            # Save tool call information
-            tool_calls = []
-            if hasattr(handler, "events"):
-                for event in handler.events:
-                    if hasattr(event, "tool_name"):
-                        tool_calls.append(
-                            {
-                                "tool_name": event.tool_name,
-                                "tool_input": getattr(event, "tool_kwargs", {}),
-                                "result": str(getattr(event, "tool_output", ""))[:200],
-                            }
-                        )
-
-            if self.current_step:
-                self.current_step.tool_calls = tool_calls
-
-            return response_str[:2000]
-
-        except Exception as e:
-            logger.error(f"Error executing step '{step_description[:50]}...': {e}")
-            raise
-
     def _clean_step_result(self, result: str) -> str:
-        """Remove instruction text and templates from step results"""
-        # Remove common instruction patterns
-        patterns_to_remove = [
+        """Clean and format step result"""
+        # Remove instruction patterns
+        patterns = [
             r"1\.\s*Use the appropriate tool.*?(?=\n|$)",
             r"2\.\s*Be specific with tool.*?(?=\n|$)",
             r"3\.\s*Return ONLY the result.*?(?=\n|$)",
             r"4\.\s*Keep the response concise.*?(?=\n|$)",
-            r"\[your answer here.*?\]",
             r"Execute now and return the result:",
             r"Previous steps history:.*?(?=\n\n)",
             r"Available tools:.*?(?=\n\n)",
-            r"Instructions:.*?(?=\n\n)",
+            r"EXECUTION REQUIREMENTS:.*?(?=\n\n)",
         ]
 
         cleaned = result
-        for pattern in patterns_to_remove:
+        for pattern in patterns:
             cleaned = re.sub(pattern, "", cleaned, flags=re.DOTALL | re.IGNORECASE)
 
-        # Remove multiple newlines
-        cleaned = re.sub(r"\n\s*\n", "\n", cleaned)
+        # Remove repeated content
+        lines = cleaned.split("\n")
+        unique_lines = []
+        seen = set()
 
-        return cleaned.strip()
+        for line in lines:
+            line_strip = line.strip()
+            if line_strip and line_strip not in seen:
+                seen.add(line_strip)
+                unique_lines.append(line)
 
-    def _get_steps_history(self) -> str:
-        """Get history of executed steps"""
+        return "\n".join(unique_lines).strip()
+
+    def _get_detailed_steps_history(self) -> str:
+        """Get detailed step history with actor-critic information"""
         if not self.step_history.current_plan:
-            return "No steps executed yet"
+            return "No previous steps"
 
         history = []
-        for step in self.step_history.current_plan.steps[-5:]:
+        for i, step in enumerate(self.step_history.current_plan.steps[-3:], 1):
             if step.status == StepStatus.COMPLETED:
-                history.append(f"✅ {step.description}")
-                if step.result:
-                    # Truncate result for display
-                    result_preview = step.result[:100].replace("\n", " ")
-                    history.append(f"   Result: {result_preview}...")
+                history.append(f"Step {i}: ✅ {step.description}")
+                if step.actor_result:
+                    preview = step.actor_result[:200].replace("\n", " ")
+                    history.append(f"   Result: {preview}...")
                 if step.critic_analysis:
-                    history.append(f"   Analysis: {step.critic_analysis[:100]}...")
+                    success = step.critic_analysis.get("success", False)
+                    confidence = step.critic_analysis.get("confidence", 0)
+                    history.append(
+                        f"   Validation: {'✓' if success else '✗'} (confidence: {confidence})"
+                    )
             elif step.status == StepStatus.FAILED:
-                history.append(f"❌ {step.description}")
+                history.append(f"Step {i}: ❌ {step.description}")
                 if step.error:
                     history.append(f"   Error: {step.error[:100]}...")
-                if step.critic_analysis:
-                    history.append(f"   Analysis: {step.critic_analysis[:100]}...")
-            elif step.status == StepStatus.SKIPPED:
-                history.append(f"⏭️ {step.description}")
-            elif step.status == StepStatus.RUNNING:
-                history.append(f"⚡ {step.description}")
-            else:
-                history.append(f"⏳ {step.description}")
 
         return "\n".join(history)
+
+    def _generate_execution_summary(self, plan: ExecutionPlan) -> Dict[str, Any]:
+        """Generate comprehensive execution summary"""
+        total_steps = len(plan.steps)
+        completed = sum(1 for s in plan.steps if s.status == StepStatus.COMPLETED)
+        failed = sum(1 for s in plan.steps if s.status == StepStatus.FAILED)
+        skipped = sum(1 for s in plan.steps if s.status == StepStatus.SKIPPED)
+
+        total_duration = 0
+        total_actor_time = 0
+        total_critic_time = 0
+
+        for step in plan.steps:
+            if step.duration:
+                total_duration += step.duration
+            if step.actor_metadata:
+                total_actor_time += step.actor_metadata.get("execution_duration", 0)
+            if step.critic_metadata:
+                total_critic_time += step.critic_metadata.get("execution_duration", 0)
+
+        return {
+            "query": plan.query,
+            "execution_summary": {
+                "total_steps": total_steps,
+                "completed": completed,
+                "failed": failed,
+                "skipped": skipped,
+                "success_rate": round(
+                    (completed / total_steps * 100) if total_steps > 0 else 0, 1
+                ),
+            },
+            "performance": {
+                "total_execution_time": round(total_duration, 2),
+                "total_actor_time": round(total_actor_time, 2),
+                "total_critic_time": round(total_critic_time, 2),
+                "average_step_time": (
+                    round(total_duration / total_steps, 2) if total_steps > 0 else 0
+                ),
+            },
+            "timestamp": datetime.now().isoformat(),
+        }
 
     async def toggle_auto_execute(self) -> bool:
         """Toggle auto-execution mode"""

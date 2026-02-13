@@ -207,7 +207,6 @@ class HybridSearchAgent:
 
         try:
             with TraceContext("load_llama_cpp_model"):
-                # BREAKING CHANGE: LlamaCPP now uses model_path directly
                 llm = LlamaCPP(
                     model_path=model_path,
                     temperature=TEMPERATURE,
@@ -223,9 +222,9 @@ class HybridSearchAgent:
                 )
 
                 # Test the model
-                logger.info("Testing model with simple prompt...")
-                test_response = await llm.acomplete("Say 'OK'")
-                logger.debug(f"Model test response: {str(test_response)[:50]}...")
+                # logger.info("Testing model with simple prompt...")
+                # test_response = await llm.acomplete("Say 'OK'")
+                # logger.debug(f"Model test response: {str(test_response)[:50]}...")
 
                 logger.success(
                     f"GGUF model loaded successfully: {Path(model_path).name}"

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 # Model settings
-CONTEXT_WINDOW = 6000
+CONTEXT_WINDOW = 6500
 MODELS_DIR = Path("./models")  # Папка для скачанных моделей
 
 # Available models catalog
@@ -145,6 +145,7 @@ STEP_HISTORY_DIR = Path("./step_history")
 
 # Embedding settings
 EMBEDDING_MODEL = "deepvk/USER2-small"
+# EMBEDDING_MODEL = "jinaai/jina-embeddings-v2-small-en"
 # EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 FALLBACK_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 CHUNK_SIZE = 512
