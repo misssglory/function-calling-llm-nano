@@ -239,6 +239,7 @@ class StepByStepAgent:
         step_result: Any,
         tool_calls: List[Dict],
         ctx: Context,
+        remaining_trials=3,
     ) -> Dict[str, Any]:
         """Enhanced critic with detailed validation and confidence scoring"""
         critic_id = str(uuid.uuid4())[:8]
@@ -302,7 +303,7 @@ class StepByStepAgent:
 
                     if isinstance(ev, AgentOutput):
                         logger.debug("critic_step: AgentOutput in chain")
-                        logger.debug(ev.response.content)
+                        logger.trace(ev.response.content)
                         # break
                     if isinstance(ev, ToolCallResult):
                         logger.debug("critic_step: ToolCallResult in chain")
@@ -324,12 +325,26 @@ class StepByStepAgent:
             return validation
 
         except Exception as e:
-            logger.error(f"Error in critic step: {e}")
-            return self._fallback_critic(step_result, tool_calls)
+            logger.exception(f"Error in critic step: {e}")
+            ctx.send_event(StopEvent(result="ok"))
+            await handler.cancel_run()
+            try:
+                resp = await self._critic_step(
+                    step_description,
+                    original_query,
+                    step_result,
+                    tool_calls,
+                    ctx=Context(self.agent),
+                    remaining_trials=remaining_trials - 1,
+                )
+                return resp
+            except:
+                # raise
+                return self._fallback_critic(step_result, tool_calls)
 
     @trace_function
     async def _execute_step(
-        self, step_description: str, ctx: Context
+        self, step_description: str, ctx: Context, remaining_trials=3
     ) -> tuple[str, List[Dict]]:
         """Execute step and return result with detailed tool call information"""
         step_id = str(uuid.uuid4())[:8]
@@ -383,7 +398,7 @@ class StepByStepAgent:
                     #     logger.debug(f"Output: {ev.tool_output}")
                     if isinstance(ev, AgentOutput):
                         logger.debug("execute_step: AgentOutput in chain")
-                        logger.debug(ev.response.content)
+                        logger.trace(ev.response.content)
                         # break
                     if isinstance(ev, ToolCallResult):
                         logger.debug("execute_step: ToolCallResult in chain")
@@ -404,9 +419,7 @@ class StepByStepAgent:
 
                 response_str = self._clean_step_result(response_str)
 
-            # Extract detailed tool call information
             tool_calls = []
-
             for ev in _events:
                 if isinstance(ev, ToolCallResult):
                     tool_calls.append(
@@ -418,42 +431,24 @@ class StepByStepAgent:
                             "success": ev.tool_output.is_error,
                         }
                     )
-            # if hasattr(handler, "events"):
-            #     for event in handler.events:
-            #         if hasattr(event, "tool_name"):
-            #             tool_calls.append(
-            #                 {
-            #                     "tool_name": event.tool_name,
-            #                     "tool_input": getattr(event, "tool_kwargs", {}),
-            #                     "tool_output": str(getattr(event, "tool_output", ""))[
-            #                         :500
-            #                     ],
-            #                     "timestamp": datetime.now().isoformat(),
-            #                     "success": not hasattr(event, "error")
-            #                     or event.error is None,
-            #                 }
-            #             )
-
-            # If no tool calls detected but step should use tools, add note
-
-            # if not tool_calls and any(
-            #     tool in step_description.lower()
-            #     for tool in ["search", "navigate", "extract", "click", "scrape"]
-            # ):
-            #     tool_calls.append(
-            #         {
-            #             "tool_name": "no_tool_used",
-            #             "note": "Step was expected to use a tool but none were called",
-            #             "timestamp": datetime.now().isoformat(),
-            #             "success": False,
-            #         }
-            #     )
 
             return response_str[:5000], tool_calls
 
         except Exception as e:
             logger.exception(f"Error executing step '{step_description[:50]}...': {e}")
-            raise
+            ctx.send_event(StopEvent(result="ok"))
+            await handler.cancel_run()
+
+            try:
+                resp = await self._execute_step(
+                    step_description,
+                    ctx=Context(self.agent),
+                    remaining_trials=remaining_trials - 1,
+                )
+                return resp
+            except:
+                raise
+            # raise
 
     async def _analyze_failure(
         self, step_description: str, error: str, ctx: Context
