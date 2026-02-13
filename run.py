@@ -74,7 +74,9 @@ if __name__ == "__main__":
 
     args, unknown = parser.parse_known_args()
 
-    logger.info(f"Args: {json.dumps(vars(args), indent=2, default=str)}")
+    logger.info(
+        f"Args: {json.dumps(vars(args), indent=2, default=str, ensure_ascii=False)}"
+    )
 
     try:
         import google.colab
