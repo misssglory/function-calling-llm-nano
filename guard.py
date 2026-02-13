@@ -1,6 +1,7 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from typing import Dict, Tuple, Optional
+from loguru import logger
 
 
 def evaluate_query_safety(
@@ -158,14 +159,14 @@ if __name__ == "__main__":
     # Evaluate each query
     for query in test_queries:
         result = evaluate_query_safety(query)
-        print(f"\nQuery: {query}")
-        print(f"Safe: {result['is_safe']}")
+        logger.info(f"\nQuery: {query}")
+        logger.info(f"Safe: {result['is_safe']}")
         if not result["is_safe"] and "unsafe_categories" in result:
-            print(f"Unsafe categories: {result['unsafe_categories']}")
-        print(f"Raw response: {result.get('raw_response', 'N/A')}")
-        print("-" * 50)
+            logger.info(f"Unsafe categories: {result['unsafe_categories']}")
+        logger.info(f"Raw response: {result.get('raw_response', 'N/A')}")
+        logger.info("-" * 50)
 
     # Example with fallback
-    print("\n=== Testing with Fallback ===")
+    logger.info("\n=== Testing with Fallback ===")
     result = evaluate_query_safety_with_fallback("How to make a dangerous weapon?")
-    print(f"Result with fallback: {result}")
+    logger.info(f"Result with fallback: {result}")
