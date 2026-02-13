@@ -1,5 +1,6 @@
 """Step-by-step execution agent using composition with detailed actor-critic validation"""
 
+import math
 from typing import List, Dict, Any, AsyncGenerator, Optional
 from datetime import datetime
 import asyncio
@@ -23,6 +24,7 @@ from hybrid_search_agent.models.step_models import (
 from hybrid_search_agent.core.step_history import StepHistory
 from trace_context import trace_function, TraceContext
 from loguru import logger
+import hybrid_search_agent.utils.reduce_context as reduce_context
 
 
 class StepByStepAgent:
@@ -329,10 +331,29 @@ class StepByStepAgent:
             ctx.send_event(StopEvent(result="ok"))
             await handler.cancel_run()
             try:
-                resp = await self._critic_step(
+                logger.debug(
+                    f"Trials remaining: {remaining_trials} Original lengths: {len(step_description)}, {len(original_query)}, {len(step_result)}"
+                )
+                desc_trunc = reduce_context.remove_thoughts_and_duplicates(
                     step_description,
+                    False if remaining_trials > 2 else True,
+                    int(30 / (3 - math.sqrt(remaining_trials))),
+                )
+                query_trunc = reduce_context.remove_thoughts_and_duplicates(
                     original_query,
+                    False if remaining_trials > 2 else True,
+                    int(30 / (3 - math.sqrt(remaining_trials))),
+                )
+                step_trunc = reduce_context.remove_thoughts_and_duplicates(
                     step_result,
+                    False if remaining_trials > 2 else True,
+                    int(30 / (3 - math.sqrt(remaining_trials))),
+                )
+                logger.debug("Reduced lengths")
+                resp = await self._critic_step(
+                    desc_trunc,
+                    query_trunc,
+                    step_trunc,
                     tool_calls,
                     ctx=Context(self.agent),
                     remaining_trials=remaining_trials - 1,
@@ -440,6 +461,14 @@ class StepByStepAgent:
             await handler.cancel_run()
 
             try:
+                logger.debug(
+                    f"Trials remaining: {remaining_trials} Original lengths: {len(step_description)}"
+                )
+                desc_trunc = reduce_context.remove_thoughts_and_duplicates(
+                    step_description,
+                    False if remaining_trials > 2 else True,
+                    int(30 / (3 - math.sqrt(remaining_trials))),
+                )
                 resp = await self._execute_step(
                     step_description,
                     ctx=Context(self.agent),
@@ -706,8 +735,18 @@ Save extracted text as response
             if not steps:
                 raise Exception("Steps are empty")
 
+            steps = [
+                reduce_context.remove_leading_numbers_and_dots(s)
+                for s in steps
+                if len(s) > 5
+            ]
+
+            steps = [s for s in steps if len(s) > 5]
+
+            steps = reduce_context.remove_repeats(steps)
+
             return (
-                steps[:7]
+                steps[:5]
                 # if steps
                 # else [
                 #     f"Search for {query} using duckduckgo_search",
