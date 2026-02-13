@@ -11,6 +11,7 @@ import time
 from llama_index.core.agent import ReActAgent
 from llama_index.core.agent.workflow import ToolCallResult, AgentStream, AgentOutput
 from llama_index.core.workflow import Context
+from llama_index.core.workflow.events import StopEvent
 
 from hybrid_search_agent.core import step_history
 from hybrid_search_agent.models.step_models import (
@@ -362,14 +363,28 @@ class StepByStepAgent:
                         continue
                     logger.debug(type(ev))
                     _events.append(ev)
-                    if isinstance(ev, ToolCallResult):
-                        logger.debug(f"Tool Used: {ev.tool_name}")
-                        logger.debug(f"Inputs: {ev.tool_kwargs}")
-                        logger.debug(f"Output: {ev.tool_output}")
+                    # if isinstance(ev, ToolCallResult):
+                    #     logger.debug(f"Tool Used: {ev.tool_name}")
+                    #     logger.debug(f"Inputs: {ev.tool_kwargs}")
+                    #     logger.debug(f"Output: {ev.tool_output}")
                     if isinstance(ev, AgentOutput):
+                        logger.debug("execute_step: AgentOutput in chain")
+                        # break
+                    if isinstance(ev, ToolCallResult):
+                        logger.debug("execute_step: ToolCallResult in chain")
+                        await handler.cancel_run()
+                        # ctx.send_event(StopEvent(result="ok"))
                         break
 
-                response = await handler
+                # try:
+                # response = await handler
+                # except Exception as e:
+                # logger.exception(e)
+                response = ""
+                for ev in _events:
+                    if isinstance(ev, AgentOutput):
+                        response += ev.response.content
+
                 response_str = str(response)
 
                 logger.debug(f"Step response: {response_str}")
@@ -378,35 +393,48 @@ class StepByStepAgent:
 
             # Extract detailed tool call information
             tool_calls = []
-            if hasattr(handler, "events"):
-                for event in handler.events:
-                    if hasattr(event, "tool_name"):
-                        tool_calls.append(
-                            {
-                                "tool_name": event.tool_name,
-                                "tool_input": getattr(event, "tool_kwargs", {}),
-                                "tool_output": str(getattr(event, "tool_output", ""))[
-                                    :500
-                                ],
-                                "timestamp": datetime.now().isoformat(),
-                                "success": not hasattr(event, "error")
-                                or event.error is None,
-                            }
-                        )
+
+            for ev in _events:
+                if isinstance(ev, ToolCallResult):
+                    tool_calls.append(
+                        {
+                            "tool_name": ev.tool_name,
+                            "tool_input": ev.tool_kwargs,
+                            "tool_output": ev.tool_output.content,
+                            "timestamp": datetime.now().isoformat(),
+                            "success": ev.tool_output.is_error,
+                        }
+                    )
+            # if hasattr(handler, "events"):
+            #     for event in handler.events:
+            #         if hasattr(event, "tool_name"):
+            #             tool_calls.append(
+            #                 {
+            #                     "tool_name": event.tool_name,
+            #                     "tool_input": getattr(event, "tool_kwargs", {}),
+            #                     "tool_output": str(getattr(event, "tool_output", ""))[
+            #                         :500
+            #                     ],
+            #                     "timestamp": datetime.now().isoformat(),
+            #                     "success": not hasattr(event, "error")
+            #                     or event.error is None,
+            #                 }
+            #             )
 
             # If no tool calls detected but step should use tools, add note
-            if not tool_calls and any(
-                tool in step_description.lower()
-                for tool in ["search", "navigate", "extract", "click", "scrape"]
-            ):
-                tool_calls.append(
-                    {
-                        "tool_name": "no_tool_used",
-                        "note": "Step was expected to use a tool but none were called",
-                        "timestamp": datetime.now().isoformat(),
-                        "success": False,
-                    }
-                )
+
+            # if not tool_calls and any(
+            #     tool in step_description.lower()
+            #     for tool in ["search", "navigate", "extract", "click", "scrape"]
+            # ):
+            #     tool_calls.append(
+            #         {
+            #             "tool_name": "no_tool_used",
+            #             "note": "Step was expected to use a tool but none were called",
+            #             "timestamp": datetime.now().isoformat(),
+            #             "success": False,
+            #         }
+            #     )
 
             return response_str[:5000], tool_calls
 
@@ -612,11 +640,9 @@ Save extracted text as response
                 logger.debug(ctx)
                 handler = self.agent.run(prompt, ctx=ctx)
                 async for ev in handler.stream_events():
-                    logger.debug(type(ev))
                     if isinstance(ev, AgentStream):
                         continue
-
-                    logger.debug(ev)
+                    logger.debug(type(ev))
                     _events.append(ev)
                     if isinstance(ev, ToolCallResult):
                         logger.debug(f"Tool Used: {ev.tool_name}")
