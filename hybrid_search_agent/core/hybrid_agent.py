@@ -448,7 +448,8 @@ class HybridSearchAgent:
     async def close_browser(self):
         """Close Playwright browser."""
         if hasattr(self, "playwright_engine") and self.playwright_engine:
-            await self.playwright_engine.close()
+            # await self.playwright_engine.close()
+            pass
 
     def get_phoenix_url(self) -> str:
         """Get Phoenix URL for viewing traces."""
