@@ -65,10 +65,12 @@
             "request": "launch",
             "program": "${workspaceFolder}/run.py",
             "args": [
+                "--step-by-step",
                 "--model",
-                "tinyllama",
+                "qvikhr-3b",
+                "--visible", 
                 "--query",
-                "What is artificial intelligence?"
+                "Загрузи текст с сайта iqdoc.ai"
             ],
             "console": "integratedTerminal",
             "justMyCode": true,
