@@ -291,10 +291,27 @@ class StepByStepAgent:
                 "critic_step", critic_id=critic_id, step=step_description[:50]
             ):
                 handler = self.agent.run(critic_prompt, ctx=ctx)
+                _events = []
+                logger.debug(critic_prompt)
+                async for ev in handler.stream_events():
+                    if isinstance(ev, AgentStream):
+                        print(ev.delta, end="", flush=True)
+                        continue
+                    logger.debug(type(ev))
+                    _events.append(ev)
+
+                    if isinstance(ev, AgentOutput):
+                        logger.debug("critic_step: AgentOutput in chain")
+                        logger.debug(ev.response.content)
+                        # break
+                    if isinstance(ev, ToolCallResult):
+                        logger.debug("critic_step: ToolCallResult in chain")
+                        ctx.send_event(StopEvent(result="ok"))
+                        await handler.cancel_run()
+                        break
                 response = await handler
                 response_text = str(response)
 
-            # Parse JSON response
             json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
             if json_match:
                 validation = json.loads(json_match.group())
@@ -345,10 +362,6 @@ class StepByStepAgent:
         Execute now and return the result:
         """
 
-        logger.debug(
-            f"execute_step: <red>description</red>: {step_description} <red>history</red>: {step_history}"
-        )
-
         try:
             _events = []
             with TraceContext(
@@ -360,6 +373,7 @@ class StepByStepAgent:
 
                 async for ev in handler.stream_events():
                     if isinstance(ev, AgentStream):
+                        print(ev.delta, end="", flush=True)
                         continue
                     logger.debug(type(ev))
                     _events.append(ev)
@@ -369,11 +383,12 @@ class StepByStepAgent:
                     #     logger.debug(f"Output: {ev.tool_output}")
                     if isinstance(ev, AgentOutput):
                         logger.debug("execute_step: AgentOutput in chain")
+                        logger.debug(ev.response.content)
                         # break
                     if isinstance(ev, ToolCallResult):
                         logger.debug("execute_step: ToolCallResult in chain")
+                        ctx.send_event(StopEvent(result="ok"))
                         await handler.cancel_run()
-                        # ctx.send_event(StopEvent(result="ok"))
                         break
 
                 # try:
@@ -383,12 +398,10 @@ class StepByStepAgent:
                 response = ""
                 for ev in _events:
                     if isinstance(ev, AgentOutput):
-                        response += ev.response.content
+                        response = response + ev.response.content
 
                 response_str = str(response)
 
-                logger.debug(f"Step response: {response_str}")
-                # Clean and validate response
                 response_str = self._clean_step_result(response_str)
 
             # Extract detailed tool call information
@@ -439,7 +452,7 @@ class StepByStepAgent:
             return response_str[:5000], tool_calls
 
         except Exception as e:
-            logger.error(f"Error executing step '{step_description[:50]}...': {e}")
+            logger.exception(f"Error executing step '{step_description[:50]}...': {e}")
             raise
 
     async def _analyze_failure(
