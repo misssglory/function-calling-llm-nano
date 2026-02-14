@@ -31,6 +31,7 @@ from trace_context import trace_function, TraceContext
 from loguru import logger
 import hybrid_search_agent.utils.reduce_context as reduce_context
 import hybrid_search_agent.utils.string_processing as string_processing
+import hybrid_search_agent.utils.validation as validation
 
 
 class StepByStepAgent:
@@ -236,6 +237,19 @@ class StepByStepAgent:
         summary = self._generate_execution_summary(plan)
         yield {"type": "plan_complete", "plan": plan, "summary": summary}
 
+    async def get_response(self, handler, _events):
+        try:
+            response = await handler
+        except:
+            response = ""
+            for ev in _events:
+                if isinstance(ev, AgentOutput):
+                    response = response + ev.response.content
+            asyncio.create_task(handler.cancel_run())
+
+        response_str = str(response)
+        return response_str
+
     @trace_function
     async def _critic_step(
         self,
@@ -292,12 +306,13 @@ Return a JSON object with the following structure:
 Return ONLY the JSON object, no other text.
 """
 
+        response_text = ""
+        _events = []
         try:
             with TraceContext(
                 "critic_step", critic_id=critic_id, step=step_description[:50]
             ):
                 handler = self.agent.run(critic_prompt, ctx=ctx)
-                _events = []
                 logger.debug(critic_prompt)
                 async for ev in handler.stream_events():
                     if isinstance(ev, AgentStream):
@@ -315,10 +330,15 @@ Return ONLY the JSON object, no other text.
                         ctx.send_event(StopEvent(result="ok"))
                         await handler.cancel_run()
                         break
-                response = await handler
-                response_text = str(response)
 
+                # response = await handler
+                # response_text = str(response)
+
+            response_text = await self.get_response(handler, _events)
+            response_text = string_processing.get_first_json_object(response_text)
+            logger.debug(f"critic_step: Response text: {response_text}")
             json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+
             if json_match:
                 validation = json.loads(json_match.group())
             else:
@@ -331,8 +351,19 @@ Return ONLY the JSON object, no other text.
 
         except Exception as e:
             logger.exception(f"Error in critic step: {e}")
-            ctx.send_event(StopEvent(result="ok"))
-            await handler.cancel_run()
+
+            try:
+                # await handler.cancel_run()
+                asyncio.create_task(handler.cancel_run())
+            except:
+                pass
+
+            try:
+                ctx.send_event(StopEvent(result="ok"))
+                # ctx = Context(self.agent)
+            except:
+                pass
+
             try:
                 logger.debug(
                     f"Trials remaining: {remaining_trials} Original lengths: {len(step_description)}, {len(original_query)}, {len(step_result)}"
@@ -401,8 +432,9 @@ AVAILABLE TOOLS:
 Execute now and return the result:
 """
 
+        _events = []
+        reposnse_str = ""
         try:
-            _events = []
             with TraceContext(
                 "execute_step", step_id=step_id, step_description=step_description[:50]
             ):
@@ -430,17 +462,12 @@ Execute now and return the result:
                         await handler.cancel_run()
                         break
 
-                # try:
-                # response = await handler
-                # except Exception as e:
-                # logger.exception(e)
-                response = ""
-                for ev in _events:
-                    if isinstance(ev, AgentOutput):
-                        response = response + ev.response.content
+                    # try:
+                    # response = await handler
+                    # except Exception as e:
+                    # logger.exception(e)
 
-                response_str = str(response)
-
+                response_str = await self.get_response(handler, _events)
                 response_str = self._clean_step_result(response_str)
 
             tool_calls = []
@@ -452,7 +479,9 @@ Execute now and return the result:
                             "tool_input": ev.tool_kwargs,
                             "tool_output": ev.tool_output.content,
                             "timestamp": datetime.now().isoformat(),
-                            "success": ev.tool_output.is_error,
+                            "success": "returned status code 200"
+                            in ev.tool_output.content
+                            or ev.tool_output.is_error,
                         }
                     )
 
@@ -460,8 +489,16 @@ Execute now and return the result:
 
         except Exception as e:
             logger.exception(f"Error executing step '{step_description[:50]}...': {e}")
-            ctx.send_event(StopEvent(result="ok"))
-            await handler.cancel_run()
+            try:
+                await handler.cancel_run()
+            except:
+                pass
+
+            try:
+                ctx.send_event(StopEvent(result="ok"))
+                # ctx = Context(self.agent)
+            except:
+                pass
 
             try:
                 logger.debug(
@@ -636,10 +673,39 @@ Provide concise, actionable analysis:
             "method": "heuristic",
         }
 
+    def _parse_steps_from_json(self, response_text: str) -> List[str]:
+        """Parse steps from JSON response"""
+        # Remove markdown code blocks if present
+        cleaned = re.sub(r"```json\s*|\s*```", "", response_text)
+
+        # Find JSON object
+        json_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if not json_match:
+            # Fallback to old parsing method
+            return self.parse_steps_from_raw_response(response_text)
+
+        try:
+            data = json.loads(json_match.group())
+            steps = data.get("steps", [])
+
+            # Clean each step (remove numbers, bullets, etc.)
+            cleaned_steps = []
+            for step in steps:
+                step = re.sub(r"^(\d+[.)]\s*|\-\s*|\*\s*)", "", step.strip())
+                if step and len(step) > 5:
+                    cleaned_steps.append(step)
+
+            return cleaned_steps[:5]
+
+        except json.JSONDecodeError:
+            # Fallback to old parsing method
+            return self.parse_steps_from_raw_response(response_text)
+
     def parse_steps_from_raw_response(self, response_text):
         logger.debug(f"generate_execution_plan: Response: {response_text}")
         steps = []
-        for line in response_text.split("\n"):
+        lines = re.split(r"\n|\d+\.", response_text)
+        for line in lines:
             line = line.strip()
 
             # Skip invalid lines
@@ -689,7 +755,9 @@ Provide concise, actionable analysis:
         logger.debug(f"Steps after preprocessing: {steps}")
         return steps
 
-    async def _generate_execution_plan(self, query: str, ctx: Context) -> List[str]:
+    async def _generate_execution_plan(
+        self, query: str, ctx: Context, trials_remaining=3
+    ) -> List[str]:
         """Generate detailed execution plan with specific tool actions"""
         plan_query_id = str(uuid.uuid4())[:8]
 
@@ -702,17 +770,21 @@ Steps must be in logical sequence
 Include specific parameters where known
 Maximum 5 steps
         
-        
-    FORMAT: One step per line, no numbers, no prefixes
+    FORMAT: Return ONLY a JSON object with a "steps" array.
     EXAMPLE:
-Search for openclaw website using duckduckgo_search
-Navigate to found website
-Extract all text from the page
-Save extracted text as response
-        
-    Return ONLY the steps, nothing else
-        """
+{{
+    "steps": [
+        "Search for openclaw website using duckduckgo_search",
+        "Navigate to found website",
+        "Extract all text from the page",
+        "Save extracted text as response"
+    ]
+}}
 
+    Return ONLY the JSON object, nothing else.
+"""
+
+        handler = None
         try:
             _events = []
             response = ""
@@ -742,29 +814,36 @@ Save extracted text as response
                         ctx.send_event(StopEvent(result="ok"))
                         break
 
-            response_text = string_processing.get_text_before_first_marker(response)
-            steps = self.parse_steps_from_raw_response(response_text)
+            # response_text = string_processing.get_text_before_first_marker(response)
+            response_text = string_processing.get_first_json_object(response)
+            logger.debug(f"generate_execution_plan: Response text: {response_text}")
+            # steps = self.parse_steps_from_raw_response(response_text)
             asyncio.create_task(handler.cancel_run())
+            steps = self._parse_steps_from_json(response_text)
 
-            return (
-                steps[:5]
-                # if steps
-                # else [
-                #     f"Search for {query} using duckduckgo_search",
-                #     "Navigate to the main website URL",
-                #     "Extract all text content from the page",
-                #     "Return the extracted text as result",
-                # ]
-            )
+            # Validate with Pydantic
+            validated_plan = validation.ExecutionPlan(steps=steps)
+
+            # logger.debug(f"Validated steps: {validated_plan.steps}")
+            return validated_plan.steps[:5]
 
         except Exception as e:
             logger.exception(f"Error generating plan: {e}")
-            return [
-                f"Search for {query} using duckduckgo_search",
-                "Navigate to the main website URL",
-                "Extract all text content from the page",
-                "Return the extracted text as result",
-            ]
+            if trials_remaining < 0:
+                raise Exception("Trials for plan creation stage are over")
+
+            try:
+                asyncio.create_task(handler.cancel_run())
+            except:
+                pass
+
+            try:
+                ctx.send_event(StopEvent(result="ok"))
+                ctx = Context(self.agent)
+            except:
+                pass
+
+            return await self._generate_execution_plan(query, ctx, trials_remaining - 1)
 
     def _clean_step_result(self, result: str) -> str:
         """Clean and format step result"""
