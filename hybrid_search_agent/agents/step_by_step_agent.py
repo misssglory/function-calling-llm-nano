@@ -10,7 +10,12 @@ import re
 import time
 
 from llama_index.core.agent import ReActAgent
-from llama_index.core.agent.workflow import ToolCallResult, AgentStream, AgentOutput
+from llama_index.core.agent.workflow import (
+    ToolCall,
+    ToolCallResult,
+    AgentStream,
+    AgentOutput,
+)
 from llama_index.core.workflow import Context
 from llama_index.core.workflow.events import StopEvent
 
@@ -25,6 +30,7 @@ from hybrid_search_agent.core.step_history import StepHistory
 from trace_context import trace_function, TraceContext
 from loguru import logger
 import hybrid_search_agent.utils.reduce_context as reduce_context
+import hybrid_search_agent.utils.string_processing as string_processing
 
 
 class StepByStepAgent:
@@ -43,16 +49,12 @@ class StepByStepAgent:
     async def run_step_by_step(self, query: str, ctx: Context) -> AsyncGenerator:
         """Execute query step by step with detailed actor-critic analysis"""
 
-        # Reset flags
         self.skip_step = False
         self.continue_execution = True
         self.resume_execution_flag = False
 
-        # Create execution plan
         plan = self.step_history.create_plan(query)
         yield {"type": "plan_created", "plan": plan}
-
-        # Generate execution plan from LLM
         plan_steps = await self._generate_execution_plan(query, ctx)
 
         for i, step_desc in enumerate(plan_steps):
@@ -68,7 +70,9 @@ class StepByStepAgent:
             plan.add_step(step)
             yield {"type": "step_created", "step": step}
 
-        # Execute steps sequentially
+        ctx.send_event(StopEvent(result="ok"))
+        ctx = Context(self.agent)
+
         for step in plan.steps:
             if not self.continue_execution:
                 break
@@ -86,7 +90,6 @@ class StepByStepAgent:
             yield {"type": "step_start", "step": step}
 
             try:
-                # ACTOR: Execute current step
                 actor_start = time.perf_counter()
                 actor_result, tool_calls = await self._execute_step(
                     step.description, ctx
@@ -247,47 +250,47 @@ class StepByStepAgent:
         critic_id = str(uuid.uuid4())[:8]
 
         critic_prompt = f"""
-        You are a rigorous step critic analyzing if an execution step was successfully completed.
-        
-        ORIGINAL USER QUERY: {original_query}
-        
-        STEP EXECUTED: {step_description}
-        
-        STEP RESULT: {step_result}
-        
-        TOOL CALLS MADE: {json.dumps(tool_calls, indent=2, ensure_ascii=False)}
-        
-        Your task: Perform a detailed validation of this step.
-        
-        VALIDATION CRITERIA:
-        1. **Relevance**: Does the result directly address what the step intended to do?
-        2. **Completeness**: Is the result complete or truncated?
-        3. **Accuracy**: Does the result contain the expected type of information?
-        4. **Error Detection**: Are there any error indicators in the result?
-        5. **Tool Usage**: Were the appropriate tools used correctly?
-        6. **Data Quality**: Is the result meaningful and usable?
-        
-        Return a JSON object with the following structure:
-        {{
-            "success": boolean,
-            "confidence": float (0.0-1.0),
-            "analysis": {{
-                "summary": "Brief overall assessment",
-                "relevance": {{"score": 0-10, "reasoning": "..."}},
-                "completeness": {{"score": 0-10, "reasoning": "..."}},
-                "accuracy": {{"score": 0-10, "reasoning": "..."}},
-                "error_check": {{"found_errors": boolean, "details": "..."}},
-                "tool_usage": {{"appropriate": boolean, "reasoning": "..."}},
-                "data_quality": {{"score": 0-10, "reasoning": "..."}}
-            }},
-            "error": "Detailed error description if success=false, otherwise null",
-            "recommendations": ["Suggestion 1", "Suggestion 2"],
-            "next_steps": ["Recommended next step 1", "Recommended next step 2"],
-            "method": "llm"
-        }}
-        
-        Return ONLY the JSON object, no other text.
-        """
+You are a rigorous step critic analyzing if an execution step was successfully completed.
+
+ORIGINAL USER QUERY: {original_query}
+
+STEP EXECUTED: {step_description}
+
+STEP RESULT: {step_result}
+
+TOOL CALLS MADE: {json.dumps(tool_calls, indent=2, ensure_ascii=False)}
+
+Your task: Perform a detailed validation of this step.
+
+VALIDATION CRITERIA:
+1. **Relevance**: Does the result directly address what the step intended to do?
+2. **Completeness**: Is the result complete or truncated?
+3. **Accuracy**: Does the result contain the expected type of information?
+4. **Error Detection**: Are there any error indicators in the result?
+5. **Tool Usage**: Were the appropriate tools used correctly?
+6. **Data Quality**: Is the result meaningful and usable?
+
+Return a JSON object with the following structure:
+{{
+    "success": boolean,
+    "confidence": float (0.0-1.0),
+    "analysis": {{
+        "summary": "Brief overall assessment",
+        "relevance": {{"score": 0-10, "reasoning": "..."}},
+        "completeness": {{"score": 0-10, "reasoning": "..."}},
+        "accuracy": {{"score": 0-10, "reasoning": "..."}},
+        "error_check": {{"found_errors": boolean, "details": "..."}},
+        "tool_usage": {{"appropriate": boolean, "reasoning": "..."}},
+        "data_quality": {{"score": 0-10, "reasoning": "..."}}
+    }},
+    "error": "Detailed error description if success=false, otherwise null",
+    "recommendations": ["Suggestion 1", "Suggestion 2"],
+    "next_steps": ["Recommended next step 1", "Recommended next step 2"],
+    "method": "llm"
+}}
+
+Return ONLY the JSON object, no other text.
+"""
 
         try:
             with TraceContext(
@@ -374,29 +377,29 @@ class StepByStepAgent:
         steps_history = self._get_detailed_steps_history()
 
         step_context = f"""
-        EXECUTE THIS SPECIFIC STEP: "{step_description}"
-        
-        EXECUTION CONTEXT:
-        {steps_history}
-        
-        EXECUTION REQUIREMENTS:
-        1. Use ONLY the tools necessary for this specific step
-        2. Do NOT continue to next steps
-        3. Return ONLY the result of this step
-        4. Be concise but complete
-        5. Include ALL data retrieved/generated
-        
-        AVAILABLE TOOLS:
-        - local_document_search(query) - Search local documents
-        - duckduckgo_search(query) - Search the internet
-        - navigate_to(url) - Navigate to URL
-        - extract_text() - Extract text from current page
-        - click(selector) - Click on elements
-        - extract_hyperlinks() - Extract hyperlinks from page  
-        - navigate_back() - Go back to previous page
-        
-        Execute now and return the result:
-        """
+EXECUTE THIS SPECIFIC STEP: "{step_description}"
+
+EXECUTION CONTEXT:
+{steps_history}
+
+EXECUTION REQUIREMENTS:
+1. Use ONLY the tools necessary for this specific step
+2. Do NOT continue to next steps
+3. Return ONLY the result of this step
+4. Be concise but complete
+5. Include ALL data retrieved/generated
+
+AVAILABLE TOOLS:
+- local_document_search(query) - Search local documents
+- duckduckgo_search(query) - Search the internet
+- navigate_to(url) - Navigate to URL
+- extract_text() - Extract text from current page
+- click(selector) - Click on elements
+- extract_hyperlinks() - Extract hyperlinks from page  
+- navigate_back() - Go back to previous page
+
+Execute now and return the result:
+"""
 
         try:
             _events = []
@@ -486,21 +489,21 @@ class StepByStepAgent:
         analysis_id = str(uuid.uuid4())[:8]
 
         analysis_prompt = f"""
-        Perform a detailed failure analysis:
-        
-        FAILED STEP: {step_description}
-        
-        ERROR: {error}
-        
-        Analyze:
-        1. ROOT CAUSE: What fundamentally caused this failure?
-        2. CONTEXT FACTORS: What conditions contributed?
-        3. IMPACT: What functionality is affected?
-        4. SOLUTION: Specific steps to fix
-        5. PREVENTION: How to avoid in future
-        
-        Provide concise, actionable analysis:
-        """
+Perform a detailed failure analysis:
+
+FAILED STEP: {step_description}
+
+ERROR: {error}
+
+Analyze:
+1. ROOT CAUSE: What fundamentally caused this failure?
+2. CONTEXT FACTORS: What conditions contributed?
+3. IMPACT: What functionality is affected?
+4. SOLUTION: Specific steps to fix
+5. PREVENTION: How to avoid in future
+
+Provide concise, actionable analysis:
+"""
 
         logger.debug(f"Analyze error: description: {step_description} error: {error}")
 
@@ -633,117 +636,115 @@ class StepByStepAgent:
             "method": "heuristic",
         }
 
+    def parse_steps_from_raw_response(self, response_text):
+        logger.debug(f"generate_execution_plan: Response: {response_text}")
+        steps = []
+        for line in response_text.split("\n"):
+            line = line.strip()
+
+            # Skip invalid lines
+            if not line or len(line) < 10:
+                continue
+            if line.startswith(("```", "`", "#", "Step", "step")):
+                continue
+            if "[your answer" in line.lower():
+                continue
+            if "Thought: " in line:
+                continue
+
+            # Clean formatting
+            line = re.sub(r"^(\d+[.)]\s*|\-\s*|\*\s*)", "", line)
+
+            # Add if it looks like a valid step
+            # if any(
+            # tool in line.lower()
+            # for tool in [
+            #     "search",
+            #     "navigate",
+            #     "extract",
+            #     "click",
+            #     "scrape",
+            #     "save",
+            #     "take",
+            # ]
+            # ):
+            if True:
+                steps.append(line)
+                logger.debug(f"Line appened: {line}")
+
+        logger.debug(f"Steps before preprocessing: {steps}")
+
+        if not steps:
+            raise Exception("Steps are empty")
+
+        steps = [
+            reduce_context.remove_leading_numbers_and_dots(s)
+            for s in steps
+            if len(s) > 5
+        ]
+
+        steps = [s for s in steps if len(s) > 5]
+
+        steps = reduce_context.remove_repeats(steps)
+        logger.debug(f"Steps after preprocessing: {steps}")
+        return steps
+
     async def _generate_execution_plan(self, query: str, ctx: Context) -> List[str]:
         """Generate detailed execution plan with specific tool actions"""
         plan_query_id = str(uuid.uuid4())[:8]
 
-        tools_prompt = """AVAILABLE TOOLS:
-        🔍 LOCAL_SEARCH: local_document_search(query)
-        🌐 WEB_SEARCH: duckduckgo_search(query)
-        🧭 NAVIGATION: navigate_to(url)
-        📝 TEXT: extract_text()
-        🖱️ INTERACTION: click(selector)
-        🔗 LINKS: extract_hyperlinks()
-        ↩️ BACK: navigate_back()
-        """
-
-        tools_prompt = ""
-
         prompt = f"""
-        Create a detailed execution plan for: {query}
+Create a detailed execution plan for: {query}
         
-        REQUIREMENTS:
-        1. Each step must specify EXACT tool and action
-        2. Steps must be in logical sequence
-        3. Include specific parameters where known
-        4. Maximum 5 steps
+    REQUIREMENTS:
+Each step must specify EXACT tool and action
+Steps must be in logical sequence
+Include specific parameters where known
+Maximum 5 steps
         
-        {tools_prompt}
         
-        FORMAT: One step per line, no numbers, no prefixes
-        EXAMPLE:
-Search for iqdoc.ai website using duckduckgo_search
-Navigate to https://iqdoc.ai
+    FORMAT: One step per line, no numbers, no prefixes
+    EXAMPLE:
+Search for openclaw website using duckduckgo_search
+Navigate to found website
 Extract all text from the page
 Save extracted text as response
         
-        Return ONLY the steps, nothing else:
+    Return ONLY the steps, nothing else
         """
 
         try:
             _events = []
+            response = ""
             with TraceContext("generate_execution_plan", query_id=plan_query_id):
                 logger.info(prompt)
-                logger.debug(ctx)
                 handler = self.agent.run(prompt, ctx=ctx)
                 async for ev in handler.stream_events():
                     if isinstance(ev, AgentStream):
+                        print(ev.delta, end="", flush=True)
                         continue
                     logger.debug(type(ev))
                     _events.append(ev)
-                    if isinstance(ev, ToolCallResult):
-                        logger.debug(f"Tool Used: {ev.tool_name}")
-                        logger.debug(f"Inputs: {ev.tool_kwargs}")
-                        logger.debug(f"Output: {ev.tool_output}")
 
-                response = await handler
-                response_text = str(response)
-                # async for ev in handler.stream_events():
+                    if isinstance(ev, AgentOutput):
+                        response = ev.response.content
+                        logger.debug(f"AgentOutput result: {response}")
+                        if response and ("Thought: " in response or "```" in response):
+                            ctx.send_event(StopEvent(result="ok"))
+                            logger.debug("_generate_execution_plan: Break")
+                            break
 
-            # for ev in self.agent.events:
-            #     if isinstance(ev, ToolCallResult):
-            #         logger.debug(f"Tool Used: {ev.tool_name}")
-            #         logger.debug(f"Inputs: {ev.tool_kwargs}")
-            #         logger.debug(f"Output: {ev.tool_output}")
+                    if isinstance(ev, ToolCall) or isinstance(ev, ToolCallResult):
+                        logger.warning("generate_execution_plan: Tool call in chain")
+                        logger.debug(
+                            f"Tool name: {ev.tool_name} Args: {ev.tool_kwargs}"
+                        )
+                        ctx.send_event(StopEvent(result="ok"))
+                        break
 
-            logger.debug(
-                f"generate_execution_plan: Response: <green>{response_text}</green>"
-            )
-            # Parse and clean steps
-            steps = []
-            for line in response_text.split("\n"):
-                line = line.strip()
-
-                # Skip invalid lines
-                if not line or len(line) < 10:
-                    continue
-                if line.startswith(("```", "`", "#", "Step", "step")):
-                    continue
-                if "[your answer" in line.lower():
-                    continue
-
-                # Clean formatting
-                line = re.sub(r"^(\d+[.)]\s*|\-\s*|\*\s*)", "", line)
-
-                # Add if it looks like a valid step
-                if any(
-                    tool in line.lower()
-                    for tool in [
-                        "search",
-                        "navigate",
-                        "extract",
-                        "click",
-                        "scrape",
-                        "save",
-                        "take",
-                    ]
-                ):
-                    steps.append(line)
-
-            logger.debug(f"Steps: <green>{steps}</green>")
-
-            if not steps:
-                raise Exception("Steps are empty")
-
-            steps = [
-                reduce_context.remove_leading_numbers_and_dots(s)
-                for s in steps
-                if len(s) > 5
-            ]
-
-            steps = [s for s in steps if len(s) > 5]
-
-            steps = reduce_context.remove_repeats(steps)
+            response_text = string_processing.get_text_before_first_marker(response)
+            steps = self.parse_steps_from_raw_response(response_text)
+            asyncio.create_task(handler.cancel_run())
 
             return (
                 steps[:5]
@@ -779,6 +780,7 @@ Save extracted text as response
             r"EXECUTION REQUIREMENTS:.*?(?=\n\n)",
         ]
 
+        logger.debug(f"_clean_step_result before: {result}")
         cleaned = result
         for pattern in patterns:
             cleaned = re.sub(pattern, "", cleaned, flags=re.DOTALL | re.IGNORECASE)
@@ -792,9 +794,12 @@ Save extracted text as response
             line_strip = line.strip()
             if line_strip and line_strip not in seen:
                 seen.add(line_strip)
-                unique_lines.append(line)
+                if len(line) > 5:
+                    unique_lines.append(line)
 
-        return "\n".join(unique_lines).strip()
+        ret = "\n".join(unique_lines).strip()
+        logger.debug(f"After: {ret}")
+        return ret
 
     def _get_detailed_steps_history(self) -> str:
         """Get detailed step history with actor-critic information"""
