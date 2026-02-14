@@ -70,7 +70,7 @@
                 "qvikhr-3b",
                 "--visible", 
                 "--query",
-                "Загрузи текст с сайта iqdoc.ai"
+                "Загрузи текст и гиперссылки с сайта iqdoc.ai"
             ],
             "console": "integratedTerminal",
             "justMyCode": true,
