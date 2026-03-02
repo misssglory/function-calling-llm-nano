@@ -13,7 +13,7 @@ A powerful hybrid search agent that combines local document search, web search (
 
 ### [Colab example link with russian explanation](https://colab.research.google.com/drive/1BETnEIxmYr3Ttvfk5mBpCtFyFSqplods#scrollTo=FKYTn686B46W) 🇷🇺
 
-
+![thinking-fast-and-slow](thinking-fast-and-slow.jpg)
 # ✨ Features
 ### 🔍 Multi-Source Search
 Local Document Search: Search through your PDFs, text files, and documents using vector embeddings
