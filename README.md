@@ -100,7 +100,8 @@ git clone https://github.com/yourusername/hybrid-search-agent.git
 cd hybrid-search-agent
 
 # Create virtual environment
-python -m venv .venv
+pip install uv
+uv venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install dependencies
