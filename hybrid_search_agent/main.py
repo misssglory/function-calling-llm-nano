@@ -29,7 +29,7 @@ def parse_arguments():
         "-m",
         type=str,
         default="tinyllama",
-        help="Model name/key (e.g., tinyllama, mistral-7b, qvikhr-3b)",
+        help="Model name/key (e.g., tinyllama, mistral-7b, qvikhr-3-4b-q3)",
     )
 
     parser.add_argument(

@@ -38,7 +38,7 @@ Multiple Models: Support for various GGUF models (TinyLlama, Mistral, QVikhr, Sa
 
 Smart Caching: Downloaded models are stored locally in ./models/
 
-Model Selection: Choose models by simple names (e.g., tinyllama, qvikhr-3b)
+Model Selection: Choose models by simple names (e.g., `tinyllama`, `qvikhr-3-4b-q3`)
 
 ### 🛠️ Advanced Tools
 Document Q&A: Semantic search over your documents
@@ -142,10 +142,10 @@ python run.py --model tinyllama --query "What is artificial intelligence?"
 python run.py --list-models
 
 # Download a specific model
-python run.py --download qvikhr-3b
+python run.py --download qvikhr-3-4b-q3
 
 # Run with Russian model
-python run.py --step-by-step --visible --model qvikhr-3b
+python run.py --step-by-step --visible --model qvikhr-3-4b-q3
 ```
 
 ### 4. Step-by-step mode demo
@@ -183,9 +183,9 @@ python run.py --step-by-step --visible --model qvikhr-3b
 
 ## Russian Models 🇷🇺
 - Key	Model	Size	Description
-- qvikhr-3b	QVikhr 3.4B	2.1GB	Russian instruction model
-- qvikhr-7b	QVikhr 7B	4.3GB	High-quality Russian model
-- saiga-7b	Saiga 7B	4.1GB	Russian chatbot
+- `qvikhr-3-4b-q3`	QVikhr 3.4B	2.1GB	Russian instruction model based on Qwen3 (tested) 
+- `qvikhr-3-8b-q3`	QVikhr 8B	4.3GB	Bigger Qvikhr
+- `saiga-7b`	Saiga 7B	4.1GB	Russian old model
 
 # 📚 Usage Examples
 

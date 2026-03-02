@@ -11,19 +11,19 @@ MODELS_DIR = Path("./models")  # Папка для скачанных модел
 # Available models catalog
 AVAILABLE_MODELS = {
     # Russian models
-    "qvikhr-3b": {
+    "qvikhr-3-4b-q3": {
         "filename": "QVikhr-3-4B-Instruction-Q3_K_S.gguf",
-        "url": "https://huggingface.co/IlyaGusev/QVikhr-3-4B-Instruction-GGUF/resolve/main/QVikhr-3-4B-Instruction-Q3_K_S.gguf",
+        "url": "https://huggingface.co/mradermacher/QVikhr-3-4B-Instruction-GGUF/resolve/main/QVikhr-3-4B-Instruction.Q3_K_S.gguf",
         "description": "QVikhr 3.4B Russian instruction model",
         "size_gb": 2.1,
         "language": "ru",
         "context": 6000,
         "default": False,
     },
-    "qvikhr-7b": {
-        "filename": "QVikhr-7B-Instruction-Q4_K_M.gguf",
-        "url": "https://huggingface.co/IlyaGusev/QVikhr-7B-Instruct-GGUF/resolve/main/QVikhr-7B-Instruct-Q4_K_M.gguf",
-        "description": "QVikhr 7B Russian instruction model",
+    "qvikhr-3-8b-q3": {
+        "filename": "QVikhr-3-8B-Instruction-Q3_K_M.gguf",
+        "url": "https://huggingface.co/Vikhrmodels/QVikhr-3-8B-Instruction-GGUF/resolve/main/QVikhr-3-8B-Instruction-Q3_K_M.gguf",
+        "description": "QVikhr 8B Russian instruction model",
         "size_gb": 4.3,
         "language": "ru",
         "context": 8000,
